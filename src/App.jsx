@@ -67,7 +67,8 @@ export default function App() {
       });
 
       try {
-        await loadScript('https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/ffmpeg.js');
+        // Upgraded to 0.12.10 where classWorkerURL is fully supported
+        await loadScript('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
         await loadScript('https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js');
         
         const { FFmpeg } = window.FFmpegWASM;
@@ -88,10 +89,12 @@ export default function App() {
           }
         });
 
-        const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+        // Upgraded core URLs to 0.12.10
+        const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd';
         
         // --- BULLETPROOF WORKER CORS BYPASS ---
-        const classWorkerBlobUrl = await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/814.ffmpeg.js', 'text/javascript');
+        // Upgraded internal worker URL to 0.12.10
+        const classWorkerBlobUrl = await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript');
 
         await ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
