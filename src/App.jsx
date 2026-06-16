@@ -20,8 +20,8 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [eta, setEta] = useState('');
   const [previewPlaying, setPreviewPlaying] = useState(false);
-  const [previewFile, setPreviewFile] = useState(null);   // track currently being previewed
-  const [indeterminate, setIndeterminate] = useState(false); // true if progress percentage can't be shown
+  const [previewFile, setPreviewFile] = useState(null);
+  const [indeterminate, setIndeterminate] = useState(false);
   
   const [isCoiIsolated, setIsCoiIsolated] = useState(true);
   const [totalDuration, setTotalDuration] = useState(0);
@@ -40,6 +40,7 @@ export default function App() {
   const totalAudioDurationRef = useRef(0);
   const fetchFileRef = useRef(null);
   const encodeStartTimeRef = useRef(0);
+  const progressIntervalRef = useRef(null);
 
   // Dynamic Favicon Setup
   useEffect(() => {
@@ -94,7 +95,11 @@ export default function App() {
 
         const ffmpeg = new FFmpeg();
         
+        // Log handler – now logs every message to console and updates progress
         ffmpeg.on('log', ({ message }) => {
+          // Always dump to console for debugging
+          console.log(`[FFmpeg] ${message}`);
+          
           const timeMatch = message.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/);
           if (timeMatch && totalAudioDurationRef.current > 0) {
             const h = parseFloat(timeMatch[1]);
@@ -104,7 +109,7 @@ export default function App() {
             const pct = Math.min((currentSec / totalAudioDurationRef.current) * 100, 99);
             setProgress(pct);
 
-            // Live speed & ETA (just like desktop)
+            // Live speed & ETA
             const elapsed = (Date.now() - encodeStartTimeRef.current) / 1000;
             if (elapsed > 1 && currentSec > 0) {
               const speed = currentSec / elapsed;
@@ -270,7 +275,6 @@ export default function App() {
   // Global Drag Events (Fixed to ignore internal reordering)
   const handleGlobalDragOver = (e) => {
     e.preventDefault();
-    // Only trigger drop overlay if we are NOT internally dragging an item AND it's actually files being dragged
     const isFileDrag = e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files');
     if (dragItem.current === null && isFileDrag) {
       setIsDraggingOverApp(true);
@@ -287,7 +291,6 @@ export default function App() {
     e.preventDefault();
     setIsDraggingOverApp(false);
     
-    // Ignore internal drops
     if (dragItem.current !== null || status !== 'idle') return;
 
     const items = e.dataTransfer.items;
@@ -325,7 +328,7 @@ export default function App() {
         file: f,
         name: f.name,
         customChapterName: f.name.replace(/\.[^/.]+$/, ""),
-        checked: true // Checkbox state
+        checked: true
       }));
       setFiles(prev => [...prev, ...newFiles]);
       
@@ -349,7 +352,7 @@ export default function App() {
       file: f,
       name: f.name,
       customChapterName: f.name.replace(/\.[^/.]+$/, ""),
-      checked: true // Checkbox state
+      checked: true
     }));
     setFiles(prev => [...prev, ...newFiles]);
   };
@@ -372,7 +375,7 @@ export default function App() {
     dragItem.current = null;
     dragOverItem.current = null;
     setDragOverIndex(null);
-    setIsDraggingOverApp(false); // Failsafe
+    setIsDraggingOverApp(false);
   };
 
   // Track Management Functions
@@ -394,6 +397,7 @@ export default function App() {
     setProgress(0);
     setEta('Preparing...');
     setIndeterminate(false);
+    encodeStartTimeRef.current = 0;
 
     const ffmpeg = ffmpegRef.current;
     let totalDurationSec = 0;
@@ -456,20 +460,39 @@ export default function App() {
     
     cmd.push('-map_metadata', hasCover ? '2' : '1', '-c:a', 'aac', '-b:a', quality, 'output.m4b');
 
-    // If total duration is zero, fall back to indeterminate progress
-    if (totalDurationSec === 0) {
+    totalAudioDurationRef.current = totalDurationSec;
+    const canShowProgress = totalDurationSec > 0;
+
+    if (!canShowProgress) {
       setIndeterminate(true);
       console.warn('⚠️ Could not determine total duration – progress will be indeterminate');
     }
-    totalAudioDurationRef.current = totalDurationSec;
 
-    // Record start time for speed calculation
+    // Record start time and begin periodic elapsed display
     encodeStartTimeRef.current = Date.now();
     setEta('Encoding audiobook...');
     console.log('⏳ Starting encode: ffmpeg ' + cmd.join(' '));
+
+    // Fallback: update elapsed time every second if no ffmpeg time stamps appear
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    if (!canShowProgress) {
+      progressIntervalRef.current = setInterval(() => {
+        if (status !== 'encoding') {
+          clearInterval(progressIntervalRef.current);
+          return;
+        }
+        const elapsed = Math.floor((Date.now() - encodeStartTimeRef.current) / 1000);
+        const eh = Math.floor(elapsed / 3600);
+        const em = Math.floor((elapsed % 3600) / 60);
+        const es = elapsed % 60;
+        setEta(`Elapsed: ${eh.toString().padStart(2,'0')}:${em.toString().padStart(2,'0')}:${es.toString().padStart(2,'0')} | Encoding...`);
+      }, 1000);
+    }
     
     try {
       await ffmpeg.exec(cmd);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+      
       setProgress(100);
       setEta('Finalizing output file...');
       console.log('📦 Encode complete, reading output...');
@@ -490,13 +513,14 @@ export default function App() {
     } catch (e) {
       console.error('💥 Encode error:', e);
       setEta('Error occurred during encoding.');
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     } finally {
       setStatus('idle');
       setIndeterminate(false);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     }
   };
 
-  // Preview logic – can be called with a specific file or without argument
   const togglePreview = async (file = null) => {
     if (previewPlaying && audioRef.current) {
       audioRef.current.pause();
@@ -659,7 +683,6 @@ export default function App() {
                         {file.name}
                       </span>
 
-                      {/* Per‑track preview button */}
                       <button
                         onClick={() => togglePreview(file)}
                         disabled={status === 'encoding'}
@@ -688,7 +711,7 @@ export default function App() {
 
             <div className="flex justify-between items-center mt-3">
               <button 
-                onClick={() => togglePreview()}  // no argument → previews first checked file if none selected
+                onClick={() => togglePreview()}
                 disabled={files.filter(f => f.checked).length === 0 || status === 'encoding' || !ffmpegLoaded}
                 className="text-sm bg-transparent border border-[#B3B3B3] text-white px-3 py-1.5 rounded hover:border-white transition flex items-center gap-2 disabled:opacity-50"
               >
