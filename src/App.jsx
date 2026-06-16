@@ -41,6 +41,8 @@ export default function App() {
   const fetchFileRef = useRef(null);
   const encodeStartTimeRef = useRef(0);
   const progressIntervalRef = useRef(null);
+  const lastEtaUpdateRef = useRef(0);   // throttle ETA updates
+  const cumulativeEncodedSecRef = useRef(0); // for global progress
 
   // Dynamic Favicon Setup
   useEffect(() => {
@@ -108,17 +110,24 @@ export default function App() {
             const currentSec = rawH >= 0 ? (rawH * 3600 + m * 60 + s) : -1;
 
             if (currentSec >= 0) {
-              const pct = Math.min((currentSec / totalAudioDurationRef.current) * 100, 99);
+              // Update global progress (cumulative across files)
+              const newCumulative = cumulativeEncodedSecRef.current + currentSec;
+              const pct = Math.min((newCumulative / totalAudioDurationRef.current) * 100, 99);
               setProgress(pct);
 
-              const elapsed = (Date.now() - encodeStartTimeRef.current) / 1000;
-              if (elapsed > 1 && currentSec > 0) {
-                const speed = currentSec / elapsed;
-                const remainingSec = (totalAudioDurationRef.current - currentSec) / speed;
-                const rh = Math.floor(remainingSec / 3600);
-                const rm = Math.floor((remainingSec % 3600) / 60);
-                const rs = Math.floor(remainingSec % 60);
-                setEta(`Speed: ${speed.toFixed(1)}x | ETA: ${rh.toString().padStart(2,'0')}:${rm.toString().padStart(2,'0')}:${rs.toString().padStart(2,'0')}`);
+              // Update ETA only every 10 seconds
+              const now = Date.now();
+              if (now - lastEtaUpdateRef.current > 10000) {
+                lastEtaUpdateRef.current = now;
+                const elapsed = (now - encodeStartTimeRef.current) / 1000;
+                if (elapsed > 1 && currentSec > 0) {
+                  const speed = newCumulative / elapsed;
+                  const remainingSec = (totalAudioDurationRef.current - newCumulative) / speed;
+                  const rh = Math.floor(remainingSec / 3600);
+                  const rm = Math.floor((remainingSec % 3600) / 60);
+                  const rs = Math.floor(remainingSec % 60);
+                  setEta(`Speed: ${speed.toFixed(1)}x | ETA: ${rh.toString().padStart(2,'0')}:${rm.toString().padStart(2,'0')}:${rs.toString().padStart(2,'0')}`);
+                }
               }
             }
           }
@@ -399,6 +408,8 @@ export default function App() {
     setProgress(0);
     setEta('Preparing...');
     setIndeterminate(false);
+    cumulativeEncodedSecRef.current = 0;
+    lastEtaUpdateRef.current = 0;
 
     const ffmpeg = ffmpegRef.current;
     let totalDurationSec = 0;
@@ -433,6 +444,7 @@ export default function App() {
 
     // Phase 1: encode each file individually to AAC
     const tempParts = [];
+    encodeStartTimeRef.current = Date.now();
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
       setEta(`Encoding file ${i+1}/${selectedFiles.length}...`);
@@ -451,7 +463,6 @@ export default function App() {
         outName
       ];
 
-      encodeStartTimeRef.current = Date.now();
       try {
         await ffmpeg.exec(encodeCmd);
       } catch (e) {
@@ -465,6 +476,10 @@ export default function App() {
       await ffmpeg.deleteFile(srcName);
       tempParts.push(outName);
       console.log(`✅ Encoded ${f.name} -> ${outName}`);
+
+      // After each file, add its full duration to the cumulative tracker
+      // (the actual encoded time may be slightly different, but we use the pre‑computed duration for global progress)
+      cumulativeEncodedSecRef.current += await getAudioDuration(f.file);
     }
 
     // Phase 2: merge encoded parts with concat + copy
@@ -505,7 +520,6 @@ export default function App() {
     cmd.push('output.m4b');
 
     console.log('⏳ Running final merge: ffmpeg ' + cmd.join(' '));
-    encodeStartTimeRef.current = Date.now();
 
     try {
       await ffmpeg.exec(cmd);
@@ -588,309 +602,326 @@ export default function App() {
   };
 
   return (
-    <div 
-      className="min-h-screen bg-[#121212] text-[#B3B3B3] p-8 font-sans relative"
-      onDragOver={handleGlobalDragOver}
-      onDragLeave={handleGlobalDragLeave}
-      onDrop={handleGlobalDrop}
-    >
-      
-      {isDraggingOverApp && status === 'idle' && (
-        <div className="absolute inset-0 z-50 bg-[#F97300]/20 border-4 border-dashed border-[#F97300] m-4 rounded-xl flex items-center justify-center pointer-events-none">
-          <div className="bg-[#181818] px-8 py-6 rounded-lg flex flex-col items-center shadow-2xl">
-            <UploadCloud className="w-16 h-16 text-[#F97300] mb-4" />
-            <h2 className="text-2xl font-bold text-white">Drop Folders or Audio Files</h2>
-            <p className="text-sm mt-2 text-[#B3B3B3]">Supported: .mp3, .m4a, .flac, .wav, .jpg covers</p>
-          </div>
-        </div>
-      )}
+    <>
+      {/* Hide scrollbar for file list (WebKit) */}
+      <style>{`
+        .hide-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .hide-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+      `}</style>
 
-      <audio ref={audioRef} onEnded={() => setPreviewPlaying(false)} className="hidden" />
-
-      <div className="max-w-6xl mx-auto flex flex-col md:flex-row gap-8">
+      <div 
+        className="min-h-screen bg-[#121212] text-[#B3B3B3] p-8 font-sans relative"
+        onDragOver={handleGlobalDragOver}
+        onDragLeave={handleGlobalDragLeave}
+        onDrop={handleGlobalDrop}
+      >
         
-        <div className="flex-1 flex flex-col gap-6">
-          
-          <div>
-            <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">AUDIOBOOK TITLE</label>
-            <input 
-              type="text" 
-              value={meta.title}
-              onChange={(e) => setMeta({...meta, title: e.target.value})}
-              className="w-full bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:outline-none focus:border-[#F97300] transition" 
-              placeholder="Book Title..."
-            />
-          </div>
-
-          <div>
-            <button 
-              onClick={() => setShowMeta(!showMeta)} 
-              className="text-[#F97300] hover:text-[#FF8C3A] hover:underline text-xs flex items-center gap-1"
-            >
-              {showMeta ? '▲ Hide Additional Information' : '▼ Additional Information'}
-            </button>
-            
-            {showMeta && (
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <input type="text" placeholder="Author..." value={meta.author} onChange={e => setMeta({...meta, author: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
-                <input type="text" placeholder="Narrator..." value={meta.narrator} onChange={e => setMeta({...meta, narrator: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
-                <input type="text" placeholder="Genre..." value={meta.genre} onChange={e => setMeta({...meta, genre: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
-                <input type="text" placeholder="Year..." value={meta.year} onChange={e => setMeta({...meta, year: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
-              </div>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">AAC ENCODING QUALITY</label>
-            <select 
-              value={quality}
-              onChange={(e) => setQuality(e.target.value)}
-              className="w-full bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:outline-none focus:border-[#F97300] appearance-none"
-            >
-              <option value="320k">Maximum Quality AAC (320k - Recommended)</option>
-              <option value="256k">High Quality AAC (256k)</option>
-              <option value="192k">Standard AAC (192k)</option>
-              <option value="128k">Space Saver AAC (128k)</option>
-            </select>
-          </div>
-
-          <div className="flex flex-col flex-1 min-h-[300px]">
-            <div className="flex justify-between items-end mb-1">
-              <label className="text-xs font-bold tracking-widest text-[#B3B3B3]">SUPPORTED AUDIO FILES</label>
+        {isDraggingOverApp && status === 'idle' && (
+          <div className="absolute inset-0 z-50 bg-[#F97300]/20 border-4 border-dashed border-[#F97300] m-4 rounded-xl flex items-center justify-center pointer-events-none">
+            <div className="bg-[#181818] px-8 py-6 rounded-lg flex flex-col items-center shadow-2xl">
+              <UploadCloud className="w-16 h-16 text-[#F97300] mb-4" />
+              <h2 className="text-2xl font-bold text-white">Drop Folders or Audio Files</h2>
+              <p className="text-sm mt-2 text-[#B3B3B3]">Supported: .mp3, .m4a, .flac, .wav, .jpg covers</p>
             </div>
+          </div>
+        )}
+
+        <audio ref={audioRef} onEnded={() => setPreviewPlaying(false)} className="hidden" />
+
+        <div className="max-w-6xl mx-auto flex flex-col md:flex-row gap-8">
+          
+          <div className="flex-1 flex flex-col gap-6">
             
-            <div className="bg-[#282828] border border-[#3E3E3E] rounded p-2 flex-1 overflow-y-auto relative">
-              {files.length === 0 ? (
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-[#888888] pointer-events-none">
-                  <p>Drop folders or files here to begin.</p>
+            <div>
+              <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">AUDIOBOOK TITLE</label>
+              <input 
+                type="text" 
+                value={meta.title}
+                onChange={(e) => setMeta({...meta, title: e.target.value})}
+                className="w-full bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:outline-none focus:border-[#F97300] transition" 
+                placeholder="Book Title..."
+              />
+            </div>
+
+            <div>
+              <button 
+                onClick={() => setShowMeta(!showMeta)} 
+                className="text-[#F97300] hover:text-[#FF8C3A] hover:underline text-xs flex items-center gap-1"
+              >
+                {showMeta ? '▲ Hide Additional Information' : '▼ Additional Information'}
+              </button>
+              
+              {showMeta && (
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <input type="text" placeholder="Author..." value={meta.author} onChange={e => setMeta({...meta, author: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
+                  <input type="text" placeholder="Narrator..." value={meta.narrator} onChange={e => setMeta({...meta, narrator: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
+                  <input type="text" placeholder="Genre..." value={meta.genre} onChange={e => setMeta({...meta, genre: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
+                  <input type="text" placeholder="Year..." value={meta.year} onChange={e => setMeta({...meta, year: e.target.value})} className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:border-[#F97300] outline-none text-sm" />
                 </div>
-              ) : (
-                <div className="space-y-1">
-                  {files.map((file, index) => (
-                    <div 
-                      key={file.id}
-                      draggable
-                      onDragStart={(e) => dragItem.current = index}
-                      onDragEnter={(e) => {
-                        setDragOverIndex(index);
-                        dragOverItem.current = index;
-                      }}
-                      onDragEnd={handleSort}
-                      onDragOver={(e) => e.preventDefault()}
-                      className={`bg-[#181818] border border-[#3E3E3E] p-2 rounded flex items-center hover:border-[#888] transition group
-                        ${dragOverIndex === index ? 'border-t-2 border-t-[#F97300]' : ''}`}
-                    >
-                      <div className="cursor-move p-2 text-[#555] group-hover:text-[#F97300]">
-                        <GripVertical className="w-4 h-4" />
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">AAC ENCODING QUALITY</label>
+              <select 
+                value={quality}
+                onChange={(e) => setQuality(e.target.value)}
+                className="w-full bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:outline-none focus:border-[#F97300] appearance-none"
+              >
+                <option value="320k">Maximum Quality AAC (320k - Recommended)</option>
+                <option value="256k">High Quality AAC (256k)</option>
+                <option value="192k">Standard AAC (192k)</option>
+                <option value="128k">Space Saver AAC (128k)</option>
+              </select>
+            </div>
+
+            <div className="flex flex-col flex-1 min-h-[300px]">
+              <div className="flex justify-between items-end mb-1">
+                <label className="text-xs font-bold tracking-widest text-[#B3B3B3]">SUPPORTED AUDIO FILES</label>
+              </div>
+              
+              <div className="bg-[#282828] border border-[#3E3E3E] rounded p-2 flex-1 overflow-y-auto hide-scrollbar relative">
+                {files.length === 0 ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-[#888888] pointer-events-none">
+                    <p>Drop folders or files here to begin.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {files.map((file, index) => (
+                      <div 
+                        key={file.id}
+                        draggable
+                        onDragStart={(e) => dragItem.current = index}
+                        onDragEnter={(e) => {
+                          setDragOverIndex(index);
+                          dragOverItem.current = index;
+                        }}
+                        onDragEnd={handleSort}
+                        onDragOver={(e) => e.preventDefault()}
+                        className={`bg-[#181818] border border-[#3E3E3E] p-2 rounded flex items-center hover:border-[#888] transition group
+                          ${dragOverIndex === index ? 'border-t-2 border-t-[#F97300]' : ''}`}
+                      >
+                        <div className="cursor-move p-2 text-[#555] group-hover:text-[#F97300]">
+                          <GripVertical className="w-4 h-4" />
+                        </div>
+                        
+                        <input 
+                          type="checkbox" 
+                          checked={file.checked} 
+                          onChange={() => toggleFileCheckbox(file.id)}
+                          className="w-4 h-4 mr-3 accent-[#F97300] cursor-pointer"
+                        />
+                        
+                        <span className={`text-sm flex-1 truncate transition ${file.checked ? 'text-white' : 'text-[#666] line-through'}`}>
+                          {file.name}
+                        </span>
+
+                        <button
+                          onClick={() => togglePreview(file)}
+                          disabled={status === 'encoding'}
+                          className="p-2 ml-1 text-[#555] hover:text-[#F97300] hover:bg-[#282828] rounded transition disabled:opacity-50"
+                          title="Preview this track"
+                        >
+                          {previewPlaying && previewFile?.id === file.id ? (
+                            <Square className="w-4 h-4 text-[#F97300]" />
+                          ) : (
+                            <Play className="w-4 h-4" />
+                          )}
+                        </button>
+
+                        <button 
+                          onClick={() => removeFile(file.id)}
+                          className="p-2 ml-1 text-[#555] hover:text-red-400 hover:bg-[#282828] rounded transition"
+                          title="Remove Track"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
                       </div>
-                      
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between items-center mt-3">
+                <button 
+                  onClick={() => togglePreview()}
+                  disabled={files.filter(f => f.checked).length === 0 || status === 'encoding' || !ffmpegLoaded}
+                  className="text-sm bg-transparent border border-[#B3B3B3] text-white px-3 py-1.5 rounded hover:border-white transition flex items-center gap-2 disabled:opacity-50"
+                >
+                  {previewPlaying ? <Square className="w-4 h-4 text-[#F97300]" /> : <Play className="w-4 h-4" />}
+                  {previewPlaying ? 'Stop Preview' : status === 'previewing' ? 'Rendering...' : 'Preview First Track'}
+                </button>
+                
+                <div className="flex items-center gap-4">
+                  <span className="text-sm">{files.length} files loaded</span>
+                  <label className="cursor-pointer bg-transparent border border-[#B3B3B3] text-white px-4 py-1.5 rounded hover:border-white transition">
+                    Import Files
+                    <input type="file" multiple accept="audio/*" onChange={handleFileImport} className="hidden" />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <button 
+                onClick={executeMerge}
+                disabled={files.filter(f=>f.checked).length === 0 || status !== 'idle' || !ffmpegLoaded}
+                className={`w-full ${engineError ? 'bg-red-900 text-red-200' : 'bg-[#F97300] hover:bg-[#FF8C3A]'} disabled:bg-[#3E3E3E] disabled:text-[#888] text-white font-bold py-3 rounded-full transition text-lg flex justify-center items-center gap-2`}
+              >
+                {status === 'encoding' ? 'ENCODING...' : engineError ? 'ENGINE ERROR (SEE BOTTOM)' : !ffmpegLoaded ? 'LOADING ENGINE...' : <><Download className="w-5 h-5"/> ENCODE TO M4B</>}
+              </button>
+              
+              {status === 'encoding' && (
+                <div className="mt-3 space-y-1">
+                  <div className="h-3 w-full bg-[#282828] border border-[#3E3E3E] rounded-full overflow-hidden">
+                    <div className="h-full bg-[#F97300] transition-all duration-300" style={{ width: `${progress}%` }}></div>
+                  </div>
+                  <div className="text-center text-xs font-bold text-[#F97300]">{eta}</div>
+                </div>
+              )}
+            </div>
+
+          </div>
+
+          <div className="w-full md:w-[350px] flex flex-col">
+            
+            <div className="mb-8">
+              <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">CHAPTER MARKERS</label>
+              <select 
+                value={chapterMode}
+                onChange={(e) => setChapterMode(e.target.value)}
+                className="w-full bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:outline-none focus:border-[#F97300] appearance-none mb-2"
+              >
+                <option value="auto">Auto-Generate from Files</option>
+                <option value="custom">Custom Chapter Names</option>
+                <option value="none">No Chapters</option>
+              </select>
+              
+              {chapterMode === 'custom' && (
+                <button 
+                  onClick={() => setShowChapterEditor(!showChapterEditor)}
+                  className="w-full bg-transparent border border-[#B3B3B3] text-white px-3 py-1.5 rounded hover:border-white transition text-sm flex items-center justify-center gap-2"
+                >
+                  <Settings className="w-4 h-4" /> Edit Chapter Names
+                </button>
+              )}
+
+              {chapterMode === 'custom' && showChapterEditor && files.length > 0 && (
+                <div className="mt-2 bg-[#181818] border border-[#3E3E3E] rounded p-2 max-h-48 overflow-y-auto space-y-2">
+                  {files.filter(f => f.checked).map((file, idx) => (
+                    <div key={file.id} className="flex flex-col gap-1">
+                      <span className="text-xs text-[#888] truncate">{file.name}</span>
                       <input 
-                        type="checkbox" 
-                        checked={file.checked} 
-                        onChange={() => toggleFileCheckbox(file.id)}
-                        className="w-4 h-4 mr-3 accent-[#F97300] cursor-pointer"
+                        type="text" 
+                        value={file.customChapterName}
+                        onChange={(e) => {
+                          const newFiles = [...files];
+                          const fileIndex = newFiles.findIndex(f => f.id === file.id);
+                          newFiles[fileIndex].customChapterName = e.target.value;
+                          setFiles(newFiles);
+                        }}
+                        className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-1 text-sm focus:border-[#F97300] outline-none"
                       />
-                      
-                      <span className={`text-sm flex-1 truncate transition ${file.checked ? 'text-white' : 'text-[#666] line-through'}`}>
-                        {file.name}
-                      </span>
-
-                      <button
-                        onClick={() => togglePreview(file)}
-                        disabled={status === 'encoding'}
-                        className="p-2 ml-1 text-[#555] hover:text-[#F97300] hover:bg-[#282828] rounded transition disabled:opacity-50"
-                        title="Preview this track"
-                      >
-                        {previewPlaying && previewFile?.id === file.id ? (
-                          <Square className="w-4 h-4 text-[#F97300]" />
-                        ) : (
-                          <Play className="w-4 h-4" />
-                        )}
-                      </button>
-
-                      <button 
-                        onClick={() => removeFile(file.id)}
-                        className="p-2 ml-1 text-[#555] hover:text-red-400 hover:bg-[#282828] rounded transition"
-                        title="Remove Track"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
 
-            <div className="flex justify-between items-center mt-3">
-              <button 
-                onClick={() => togglePreview()}
-                disabled={files.filter(f => f.checked).length === 0 || status === 'encoding' || !ffmpegLoaded}
-                className="text-sm bg-transparent border border-[#B3B3B3] text-white px-3 py-1.5 rounded hover:border-white transition flex items-center gap-2 disabled:opacity-50"
-              >
-                {previewPlaying ? <Square className="w-4 h-4 text-[#F97300]" /> : <Play className="w-4 h-4" />}
-                {previewPlaying ? 'Stop Preview' : status === 'previewing' ? 'Rendering...' : 'Preview First Track'}
-              </button>
+            <div className="flex-1"></div> 
+
+            <div className="flex flex-col items-center">
+              <div className="w-[350px] h-[350px] bg-[#181818] rounded-lg overflow-hidden flex items-center justify-center relative border border-[#3E3E3E]">
+                {coverPreview ? (
+                  <img src={coverPreview} alt="Cover" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="text-center text-[#535353] flex flex-col items-center">
+                    <ImageIcon className="w-12 h-12 mb-2 opacity-50" />
+                    <span className="text-lg">No Cover Art</span>
+                  </div>
+                )}
+              </div>
               
-              <div className="flex items-center gap-4">
-                <span className="text-sm">{files.length} files loaded</span>
-                <label className="cursor-pointer bg-transparent border border-[#B3B3B3] text-white px-4 py-1.5 rounded hover:border-white transition">
-                  Import Files
-                  <input type="file" multiple accept="audio/*" onChange={handleFileImport} className="hidden" />
+              <div className="mt-4 flex gap-3">
+                {cover && (
+                  <button 
+                    onClick={() => { setCover(null); setCoverPreview(null); }}
+                    className="bg-transparent border border-red-500/50 text-red-400 px-4 py-2 rounded hover:bg-red-500/10 transition text-sm"
+                  >
+                    Remove
+                  </button>
+                )}
+                <label className="cursor-pointer bg-transparent border border-[#B3B3B3] text-white px-6 py-2 rounded hover:border-white transition text-sm">
+                  Change Cover Art
+                  <input type="file" accept="image/*" onChange={handleCoverImport} className="hidden" />
                 </label>
               </div>
             </div>
-          </div>
 
-          <div className="mt-4">
-            <button 
-              onClick={executeMerge}
-              disabled={files.filter(f=>f.checked).length === 0 || status !== 'idle' || !ffmpegLoaded}
-              className={`w-full ${engineError ? 'bg-red-900 text-red-200' : 'bg-[#F97300] hover:bg-[#FF8C3A]'} disabled:bg-[#3E3E3E] disabled:text-[#888] text-white font-bold py-3 rounded-full transition text-lg flex justify-center items-center gap-2`}
-            >
-              {status === 'encoding' ? 'ENCODING...' : engineError ? 'ENGINE ERROR (SEE BOTTOM)' : !ffmpegLoaded ? 'LOADING ENGINE...' : <><Download className="w-5 h-5"/> ENCODE TO M4B</>}
-            </button>
-            
-            {status === 'encoding' && (
-              <div className="mt-3 space-y-1">
-                <div className="h-3 w-full bg-[#282828] border border-[#3E3E3E] rounded-full overflow-hidden">
-                  {indeterminate ? (
-                    <div className="h-full bg-[#F97300] animate-pulse" style={{ width: '100%' }}></div>
-                  ) : (
-                    <div className="h-full bg-[#F97300] transition-all duration-300" style={{ width: `${progress}%` }}></div>
-                  )}
-                </div>
-                <div className="text-center text-xs font-bold text-[#F97300]">{eta}</div>
-              </div>
-            )}
           </div>
-
         </div>
 
-        <div className="w-full md:w-[350px] flex flex-col">
+        {/* Focus warning – shown during encoding */}
+        {status === 'encoding' && (
+          <div className="max-w-6xl mx-auto mt-4 bg-[#282828] border border-[#F97300] p-3 rounded flex items-center gap-2 text-sm text-[#F97300]">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            <span><strong>Keep this tab focused.</strong> Browsers pause heavy tasks in background tabs.</span>
+          </div>
+        )}
+
+        <div className="max-w-6xl mx-auto mt-8 space-y-4">
           
-          <div className="mb-8">
-            <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">CHAPTER MARKERS</label>
-            <select 
-              value={chapterMode}
-              onChange={(e) => setChapterMode(e.target.value)}
-              className="w-full bg-[#282828] text-white border border-[#3E3E3E] rounded p-2 focus:outline-none focus:border-[#F97300] appearance-none mb-2"
-            >
-              <option value="auto">Auto-Generate from Files</option>
-              <option value="custom">Custom Chapter Names</option>
-              <option value="none">No Chapters</option>
-            </select>
-            
-            {chapterMode === 'custom' && (
-              <button 
-                onClick={() => setShowChapterEditor(!showChapterEditor)}
-                className="w-full bg-transparent border border-[#B3B3B3] text-white px-3 py-1.5 rounded hover:border-white transition text-sm flex items-center justify-center gap-2"
-              >
-                <Settings className="w-4 h-4" /> Edit Chapter Names
-              </button>
-            )}
-
-            {chapterMode === 'custom' && showChapterEditor && files.length > 0 && (
-              <div className="mt-2 bg-[#181818] border border-[#3E3E3E] rounded p-2 max-h-48 overflow-y-auto space-y-2">
-                {files.filter(f => f.checked).map((file, idx) => (
-                  <div key={file.id} className="flex flex-col gap-1">
-                    <span className="text-xs text-[#888] truncate">{file.name}</span>
-                    <input 
-                      type="text" 
-                      value={file.customChapterName}
-                      onChange={(e) => {
-                        const newFiles = [...files];
-                        const fileIndex = newFiles.findIndex(f => f.id === file.id);
-                        newFiles[fileIndex].customChapterName = e.target.value;
-                        setFiles(newFiles);
-                      }}
-                      className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-1 text-sm focus:border-[#F97300] outline-none"
-                    />
-                  </div>
-                ))}
+          {engineError && (
+            <div className="bg-red-900/30 border border-red-500/50 p-4 rounded shadow-md flex items-start gap-4">
+              <AlertTriangle className="text-red-400 w-6 h-6 flex-shrink-0 mt-1" />
+              <div>
+                <h3 className="text-red-100 font-bold mb-1">Failed to Load Audio Engine</h3>
+                <p className="text-sm text-red-200">
+                  {engineError}
+                </p>
+                <p className="text-xs text-red-300 mt-2">
+                  Press F12 to open the developer console for more detailed network errors.
+                </p>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
-          <div className="flex-1"></div> 
-
-          <div className="flex flex-col items-center">
-            <div className="w-[350px] h-[350px] bg-[#181818] rounded-lg overflow-hidden flex items-center justify-center relative border border-[#3E3E3E]">
-              {coverPreview ? (
-                <img src={coverPreview} alt="Cover" className="w-full h-full object-cover" />
-              ) : (
-                <div className="text-center text-[#535353] flex flex-col items-center">
-                  <ImageIcon className="w-12 h-12 mb-2 opacity-50" />
-                  <span className="text-lg">No Cover Art</span>
+          {totalDuration > 10800 && (
+            <div className="bg-[#282828] border-l-4 border-[#F97300] p-4 rounded-r shadow-md flex items-start gap-4">
+              <AlertTriangle className="text-[#F97300] w-6 h-6 flex-shrink-0 mt-1" />
+              <div>
+                <h3 className="text-white font-bold mb-1">Large Audiobook Detected (Browser Memory Limits Apply)</h3>
+                <p className="text-sm">
+                  This web version processes everything directly in your browser's RAM. Because your audiobook is over 3 hours long, your browser might crash during encoding due to memory limits.
+                  <strong> For large audiobooks, please download the multi-threaded Desktop version.</strong>
+                </p>
+                <div className="mt-3 flex gap-3">
+                  <a href="https://github.com/nawnawnawnawnaw55-jpg/M4B-Audiobook-Encoder/releases/tag/V1.0.0" target="_blank" rel="noreferrer" className="text-[#F97300] hover:underline text-sm font-semibold">View Desktop Release Notes</a>
+                  <a href="https://github.com/nawnawnawnawnaw55-jpg/M4B-Audiobook-Encoder/releases/download/V1.0.0/M4B-Audiobook-Encoder.exe" className="bg-[#F97300] text-white px-3 py-1 rounded text-sm hover:bg-[#FF8C3A] transition">Download .EXE</a>
                 </div>
-              )}
-            </div>
-            
-            <div className="mt-4 flex gap-3">
-              {cover && (
-                <button 
-                  onClick={() => { setCover(null); setCoverPreview(null); }}
-                  className="bg-transparent border border-red-500/50 text-red-400 px-4 py-2 rounded hover:bg-red-500/10 transition text-sm"
-                >
-                  Remove
-                </button>
-              )}
-              <label className="cursor-pointer bg-transparent border border-[#B3B3B3] text-white px-6 py-2 rounded hover:border-white transition text-sm">
-                Change Cover Art
-                <input type="file" accept="image/*" onChange={handleCoverImport} className="hidden" />
-              </label>
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      <div className="max-w-6xl mx-auto mt-8 space-y-4">
-        
-        {engineError && (
-          <div className="bg-red-900/30 border border-red-500/50 p-4 rounded shadow-md flex items-start gap-4">
-            <AlertTriangle className="text-red-400 w-6 h-6 flex-shrink-0 mt-1" />
-            <div>
-              <h3 className="text-red-100 font-bold mb-1">Failed to Load Audio Engine</h3>
-              <p className="text-sm text-red-200">
-                {engineError}
-              </p>
-              <p className="text-xs text-red-300 mt-2">
-                Press F12 to open the developer console for more detailed network errors.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {totalDuration > 10800 && (
-          <div className="bg-[#282828] border-l-4 border-[#F97300] p-4 rounded-r shadow-md flex items-start gap-4">
-            <AlertTriangle className="text-[#F97300] w-6 h-6 flex-shrink-0 mt-1" />
-            <div>
-              <h3 className="text-white font-bold mb-1">Large Audiobook Detected (Browser Memory Limits Apply)</h3>
-              <p className="text-sm">
-                This web version processes everything directly in your browser's RAM. Because your audiobook is over 3 hours long, your browser might crash during encoding due to memory limits.
-                <strong> For large audiobooks, please download the multi-threaded Desktop version.</strong>
-              </p>
-              <div className="mt-3 flex gap-3">
-                <a href="https://github.com/nawnawnawnawnaw55-jpg/M4B-Audiobook-Encoder/releases/tag/V1.0.0" target="_blank" rel="noreferrer" className="text-[#F97300] hover:underline text-sm font-semibold">View Desktop Release Notes</a>
-                <a href="https://github.com/nawnawnawnawnaw55-jpg/M4B-Audiobook-Encoder/releases/download/V1.0.0/M4B-Audiobook-Encoder.exe" className="bg-[#F97300] text-white px-3 py-1 rounded text-sm hover:bg-[#FF8C3A] transition">Download .EXE</a>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {!isCoiIsolated && (
-          <div className="bg-red-900/30 border border-red-500/50 p-4 rounded shadow-md flex items-start gap-4">
-            <Info className="text-red-400 w-6 h-6 flex-shrink-0 mt-1" />
-            <div>
-              <h3 className="text-red-100 font-bold mb-1">Notice: Running in Single-Threaded Mode</h3>
-              <p className="text-sm text-red-200">
-                Because GitHub Pages limits custom HTTP headers, the encoder has automatically fallen back to the single-threaded engine. It will still work perfectly, but encoding may be slightly slower!
-              </p>
+          {!isCoiIsolated && (
+            <div className="bg-red-900/30 border border-red-500/50 p-4 rounded shadow-md flex items-start gap-4">
+              <Info className="text-red-400 w-6 h-6 flex-shrink-0 mt-1" />
+              <div>
+                <h3 className="text-red-100 font-bold mb-1">Notice: Running in Single-Threaded Mode</h3>
+                <p className="text-sm text-red-200">
+                  Because GitHub Pages limits custom HTTP headers, the encoder has automatically fallen back to the single-threaded engine. It will still work perfectly, but encoding may be slightly slower!
+                </p>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
 
-    </div>
+      </div>
+    </>
   );
 }
