@@ -102,8 +102,8 @@ export default function App() {
           }
         });
 
-        // 2. Base URL for CORE (MUST BE 0.12.6, there is no 0.12.10 for the core!)
-        const coreVersion = '0.12.6';
+        // 2. Base URL for CORE (Upgraded successfully to 0.12.10)
+        const coreVersion = '0.12.10';
         const baseURL = isMT ? `https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@${coreVersion}/dist/umd` : `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/umd`;
         console.log(`⚙️ Core base URL: ${baseURL}`);
 
