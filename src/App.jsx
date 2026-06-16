@@ -41,8 +41,8 @@ export default function App() {
   const fetchFileRef = useRef(null);
   const encodeStartTimeRef = useRef(0);
   const progressIntervalRef = useRef(null);
-  const lastEtaUpdateRef = useRef(0);   // throttle ETA updates
-  const cumulativeEncodedSecRef = useRef(0); // for global progress
+  const lastEtaUpdateRef = useRef(0);   // throttle ETA updates to every 10s
+  const cumulativeEncodedSecRef = useRef(0); // global progress in seconds
 
   // Dynamic Favicon Setup
   useEffect(() => {
@@ -115,12 +115,12 @@ export default function App() {
               const pct = Math.min((newCumulative / totalAudioDurationRef.current) * 100, 99);
               setProgress(pct);
 
-              // Update ETA only every 10 seconds
+              // Only update ETA text every 10 seconds to avoid jank
               const now = Date.now();
               if (now - lastEtaUpdateRef.current > 10000) {
                 lastEtaUpdateRef.current = now;
                 const elapsed = (now - encodeStartTimeRef.current) / 1000;
-                if (elapsed > 1 && currentSec > 0) {
+                if (elapsed > 1 && newCumulative > 0) {
                   const speed = newCumulative / elapsed;
                   const remainingSec = (totalAudioDurationRef.current - newCumulative) / speed;
                   const rh = Math.floor(remainingSec / 3600);
@@ -409,7 +409,7 @@ export default function App() {
     setEta('Preparing...');
     setIndeterminate(false);
     cumulativeEncodedSecRef.current = 0;
-    lastEtaUpdateRef.current = 0;
+    lastEtaUpdateRef.current = 0;   // reset throttle
 
     const ffmpeg = ffmpegRef.current;
     let totalDurationSec = 0;
@@ -444,7 +444,7 @@ export default function App() {
 
     // Phase 1: encode each file individually to AAC
     const tempParts = [];
-    encodeStartTimeRef.current = Date.now();
+    encodeStartTimeRef.current = Date.now();   // start global timer
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
       setEta(`Encoding file ${i+1}/${selectedFiles.length}...`);
@@ -477,26 +477,21 @@ export default function App() {
       tempParts.push(outName);
       console.log(`✅ Encoded ${f.name} -> ${outName}`);
 
-      // After each file, add its full duration to the cumulative tracker
-      // (the actual encoded time may be slightly different, but we use the pre‑computed duration for global progress)
+      // Update cumulative progress with this file's full pre‑computed duration
       cumulativeEncodedSecRef.current += await getAudioDuration(f.file);
     }
 
-    // Phase 2: merge encoded parts with concat + copy
+    // Phase 2: merge encoded parts with concat + copy (almost instant)
     setEta('Merging encoded files...');
     console.log('🔀 Merging all parts...');
 
-    // Write concat list
     let concatList = '';
     tempParts.forEach(part => {
       concatList += `file '${part}'\n`;
     });
     await ffmpeg.writeFile('concat_list.txt', concatList);
-
-    // Write metadata
     await ffmpeg.writeFile('metadata.txt', metadataText);
 
-    // Build final command
     const cmd = ['-y', '-f', 'concat', '-safe', '0', '-i', 'concat_list.txt'];
 
     const hasCover = cover || generatedCoverBlob;
@@ -603,7 +598,7 @@ export default function App() {
 
   return (
     <>
-      {/* Hide scrollbar for file list (WebKit) */}
+      {/* Hide scrollbar for file list (WebKit & Firefox) */}
       <style>{`
         .hide-scrollbar::-webkit-scrollbar {
           display: none;
@@ -870,7 +865,7 @@ export default function App() {
         {status === 'encoding' && (
           <div className="max-w-6xl mx-auto mt-4 bg-[#282828] border border-[#F97300] p-3 rounded flex items-center gap-2 text-sm text-[#F97300]">
             <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-            <span><strong>Keep this tab focused.</strong> Browsers pause heavy tasks in background tabs.</span>
+            <span><strong>Keep this tab focused.</strong> Browsers pause heavy tasks in background tabs. The progress bar will catch up when you return.</span>
           </div>
         )}
 
