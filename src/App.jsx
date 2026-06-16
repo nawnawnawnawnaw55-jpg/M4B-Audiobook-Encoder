@@ -95,29 +95,31 @@ export default function App() {
 
         const ffmpeg = new FFmpeg();
         
-        // Log handler – now logs every message to console and updates progress
+        // Log every message to console for full transparency
         ffmpeg.on('log', ({ message }) => {
-          // Always dump to console for debugging
           console.log(`[FFmpeg] ${message}`);
-          
-          const timeMatch = message.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/);
+
+          // Flexible regex for time, handles negative hours
+          const timeMatch = message.match(/time=(-?\d+):(\d{2}):(\d{2}\.\d+)/);
           if (timeMatch && totalAudioDurationRef.current > 0) {
-            const h = parseFloat(timeMatch[1]);
+            const rawH = parseInt(timeMatch[1], 10);
             const m = parseFloat(timeMatch[2]);
             const s = parseFloat(timeMatch[3]);
-            const currentSec = (h * 3600) + (m * 60) + s;
-            const pct = Math.min((currentSec / totalAudioDurationRef.current) * 100, 99);
-            setProgress(pct);
+            const currentSec = rawH >= 0 ? (rawH * 3600 + m * 60 + s) : -1;
 
-            // Live speed & ETA
-            const elapsed = (Date.now() - encodeStartTimeRef.current) / 1000;
-            if (elapsed > 1 && currentSec > 0) {
-              const speed = currentSec / elapsed;
-              const remainingSec = (totalAudioDurationRef.current - currentSec) / speed;
-              const rh = Math.floor(remainingSec / 3600);
-              const rm = Math.floor((remainingSec % 3600) / 60);
-              const rs = Math.floor(remainingSec % 60);
-              setEta(`Speed: ${speed.toFixed(1)}x | ETA: ${rh.toString().padStart(2,'0')}:${rm.toString().padStart(2,'0')}:${rs.toString().padStart(2,'0')}`);
+            if (currentSec >= 0) {
+              const pct = Math.min((currentSec / totalAudioDurationRef.current) * 100, 99);
+              setProgress(pct);
+
+              const elapsed = (Date.now() - encodeStartTimeRef.current) / 1000;
+              if (elapsed > 1 && currentSec > 0) {
+                const speed = currentSec / elapsed;
+                const remainingSec = (totalAudioDurationRef.current - currentSec) / speed;
+                const rh = Math.floor(remainingSec / 3600);
+                const rm = Math.floor((remainingSec % 3600) / 60);
+                const rs = Math.floor(remainingSec % 60);
+                setEta(`Speed: ${speed.toFixed(1)}x | ETA: ${rh.toString().padStart(2,'0')}:${rm.toString().padStart(2,'0')}:${rs.toString().padStart(2,'0')}`);
+              }
             }
           }
         });
@@ -378,7 +380,6 @@ export default function App() {
     setIsDraggingOverApp(false);
   };
 
-  // Track Management Functions
   const toggleFileCheckbox = (id) => {
     setFiles(files.map(f => f.id === id ? { ...f, checked: !f.checked } : f));
   };
@@ -387,6 +388,7 @@ export default function App() {
     setFiles(files.filter(f => f.id !== id));
   };
 
+  // Two‑phase encoding: separate AAC encode then merge with copy
   const executeMerge = async () => {
     if (!ffmpegLoaded || !ffmpegRef.current) return alert("FFmpeg loading...");
     
@@ -397,7 +399,6 @@ export default function App() {
     setProgress(0);
     setEta('Preparing...');
     setIndeterminate(false);
-    encodeStartTimeRef.current = 0;
 
     const ffmpeg = ffmpegRef.current;
     let totalDurationSec = 0;
@@ -410,23 +411,17 @@ export default function App() {
     if (meta.year) metadataText += `date=${meta.year}\n`;
 
     let current_time_ms = 0;
-    let inputsList = '';
 
-    console.log(`🔍 Scanning metadata for ${selectedFiles.length} files...`);
+    console.log(`🔍 Scanning durations for ${selectedFiles.length} files...`);
 
+    // First pass: get durations and build metadata
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
-      setEta(`Scanning metadata (${i+1}/${selectedFiles.length})...`);
+      setEta(`Scanning file ${i+1}/${selectedFiles.length}...`);
       console.log(`  Scanning: ${f.name}`);
-      
       const durationSec = await getAudioDuration(f.file);
       totalDurationSec += durationSec;
       const durationMs = Math.floor(durationSec * 1000);
-
-      const safeName = `input_${i}.audio`;
-      console.log(`  Writing to virtual FS: ${safeName}`);
-      await ffmpeg.writeFile(safeName, await fetchFileRef.current(f.file));
-      inputsList += `file '${safeName}'\n`;
 
       if (chapterMode !== 'none' && durationMs > 0) {
         const chapterTitle = chapterMode === 'custom' ? f.customChapterName : f.name.replace(/\.[^/.]+$/, "");
@@ -434,14 +429,62 @@ export default function App() {
       }
       current_time_ms += durationMs;
     }
+    totalAudioDurationRef.current = totalDurationSec;
 
-    console.log('📝 Writing metadata and concat list...');
-    await ffmpeg.writeFile('inputs.txt', inputsList);
+    // Phase 1: encode each file individually to AAC
+    const tempParts = [];
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const f = selectedFiles[i];
+      setEta(`Encoding file ${i+1}/${selectedFiles.length}...`);
+      console.log(`🎵 Encoding: ${f.name}`);
+
+      // Write source file
+      const srcName = `src_${i}.audio`;
+      await ffmpeg.writeFile(srcName, await fetchFileRef.current(f.file));
+
+      const outName = `part_${i}.m4a`;
+      const encodeCmd = [
+        '-y', '-i', srcName,
+        '-vn',                   // ignore embedded video/cover
+        '-c:a', 'aac',
+        '-b:a', quality,
+        outName
+      ];
+
+      encodeStartTimeRef.current = Date.now();
+      try {
+        await ffmpeg.exec(encodeCmd);
+      } catch (e) {
+        console.error(`❌ Failed to encode ${f.name}`, e);
+        setEta(`Error encoding ${f.name}`);
+        setStatus('idle');
+        return;
+      }
+
+      // Delete source to free memory
+      await ffmpeg.deleteFile(srcName);
+      tempParts.push(outName);
+      console.log(`✅ Encoded ${f.name} -> ${outName}`);
+    }
+
+    // Phase 2: merge encoded parts with concat + copy
+    setEta('Merging encoded files...');
+    console.log('🔀 Merging all parts...');
+
+    // Write concat list
+    let concatList = '';
+    tempParts.forEach(part => {
+      concatList += `file '${part}'\n`;
+    });
+    await ffmpeg.writeFile('concat_list.txt', concatList);
+
+    // Write metadata
     await ffmpeg.writeFile('metadata.txt', metadataText);
 
-    const cmd = ['-y', '-f', 'concat', '-safe', '0', '-i', 'inputs.txt'];
+    // Build final command
+    const cmd = ['-y', '-f', 'concat', '-safe', '0', '-i', 'concat_list.txt'];
+
     const hasCover = cover || generatedCoverBlob;
-    
     if (cover) {
       console.log('🖼️ Using custom cover image');
       await ffmpeg.writeFile('cover.jpg', await fetchFileRef.current(cover));
@@ -452,50 +495,23 @@ export default function App() {
       cmd.push('-i', 'cover.jpg');
     }
 
-    cmd.push('-i', 'metadata.txt', '-map', '0:a');
-    
+    cmd.push('-i', 'metadata.txt');
+    cmd.push('-map', '0:a');
     if (hasCover) {
       cmd.push('-map', '1:v', '-c:v', 'copy', '-disposition:v', 'attached_pic');
     }
-    
-    cmd.push('-map_metadata', hasCover ? '2' : '1', '-c:a', 'aac', '-b:a', quality, 'output.m4b');
+    cmd.push('-map_metadata', hasCover ? '2' : '1');
+    cmd.push('-c:a', 'copy');   // stream copy – instant!
+    cmd.push('output.m4b');
 
-    totalAudioDurationRef.current = totalDurationSec;
-    const canShowProgress = totalDurationSec > 0;
-
-    if (!canShowProgress) {
-      setIndeterminate(true);
-      console.warn('⚠️ Could not determine total duration – progress will be indeterminate');
-    }
-
-    // Record start time and begin periodic elapsed display
+    console.log('⏳ Running final merge: ffmpeg ' + cmd.join(' '));
     encodeStartTimeRef.current = Date.now();
-    setEta('Encoding audiobook...');
-    console.log('⏳ Starting encode: ffmpeg ' + cmd.join(' '));
 
-    // Fallback: update elapsed time every second if no ffmpeg time stamps appear
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    if (!canShowProgress) {
-      progressIntervalRef.current = setInterval(() => {
-        if (status !== 'encoding') {
-          clearInterval(progressIntervalRef.current);
-          return;
-        }
-        const elapsed = Math.floor((Date.now() - encodeStartTimeRef.current) / 1000);
-        const eh = Math.floor(elapsed / 3600);
-        const em = Math.floor((elapsed % 3600) / 60);
-        const es = elapsed % 60;
-        setEta(`Elapsed: ${eh.toString().padStart(2,'0')}:${em.toString().padStart(2,'0')}:${es.toString().padStart(2,'0')} | Encoding...`);
-      }, 1000);
-    }
-    
     try {
       await ffmpeg.exec(cmd);
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-      
       setProgress(100);
       setEta('Finalizing output file...');
-      console.log('📦 Encode complete, reading output...');
+      console.log('📦 Merge complete, reading output...');
 
       const data = await ffmpeg.readFile('output.m4b');
       const blob = new Blob([data.buffer], { type: 'audio/mp4' });
@@ -509,15 +525,11 @@ export default function App() {
       document.body.removeChild(a);
       setEta('Download ready!');
       console.log('✅ Download triggered successfully');
-      
     } catch (e) {
-      console.error('💥 Encode error:', e);
-      setEta('Error occurred during encoding.');
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+      console.error('💥 Merge error:', e);
+      setEta('Error during final merge.');
     } finally {
       setStatus('idle');
-      setIndeterminate(false);
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     }
   };
 
