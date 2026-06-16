@@ -39,6 +39,7 @@ export default function App() {
   const dragOverItem = useRef(null);
   const totalAudioDurationRef = useRef(0);
   const fetchFileRef = useRef(null);
+  const encodeStartTimeRef = useRef(0);
 
   // Dynamic Favicon Setup
   useEffect(() => {
@@ -102,6 +103,17 @@ export default function App() {
             const currentSec = (h * 3600) + (m * 60) + s;
             const pct = Math.min((currentSec / totalAudioDurationRef.current) * 100, 99);
             setProgress(pct);
+
+            // Live speed & ETA (just like desktop)
+            const elapsed = (Date.now() - encodeStartTimeRef.current) / 1000;
+            if (elapsed > 1 && currentSec > 0) {
+              const speed = currentSec / elapsed;
+              const remainingSec = (totalAudioDurationRef.current - currentSec) / speed;
+              const rh = Math.floor(remainingSec / 3600);
+              const rm = Math.floor((remainingSec % 3600) / 60);
+              const rs = Math.floor(remainingSec % 60);
+              setEta(`Speed: ${speed.toFixed(1)}x | ETA: ${rh.toString().padStart(2,'0')}:${rm.toString().padStart(2,'0')}:${rs.toString().padStart(2,'0')}`);
+            }
           }
         });
 
@@ -380,8 +392,8 @@ export default function App() {
 
     setStatus('encoding');
     setProgress(0);
-    setEta('Merging files... (This may take a while)');
-    setIndeterminate(false);  // will be set to true if totalDuration == 0
+    setEta('Preparing...');
+    setIndeterminate(false);
 
     const ffmpeg = ffmpegRef.current;
     let totalDurationSec = 0;
@@ -396,13 +408,19 @@ export default function App() {
     let current_time_ms = 0;
     let inputsList = '';
 
+    console.log(`🔍 Scanning metadata for ${selectedFiles.length} files...`);
+
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
+      setEta(`Scanning metadata (${i+1}/${selectedFiles.length})...`);
+      console.log(`  Scanning: ${f.name}`);
+      
       const durationSec = await getAudioDuration(f.file);
       totalDurationSec += durationSec;
       const durationMs = Math.floor(durationSec * 1000);
 
       const safeName = `input_${i}.audio`;
+      console.log(`  Writing to virtual FS: ${safeName}`);
       await ffmpeg.writeFile(safeName, await fetchFileRef.current(f.file));
       inputsList += `file '${safeName}'\n`;
 
@@ -413,12 +431,7 @@ export default function App() {
       current_time_ms += durationMs;
     }
 
-    // If total duration is zero (e.g., all duration detections failed), switch to indeterminate progress
-    if (totalDurationSec === 0) {
-      setIndeterminate(true);
-    }
-    totalAudioDurationRef.current = totalDurationSec;
-
+    console.log('📝 Writing metadata and concat list...');
     await ffmpeg.writeFile('inputs.txt', inputsList);
     await ffmpeg.writeFile('metadata.txt', metadataText);
 
@@ -426,9 +439,11 @@ export default function App() {
     const hasCover = cover || generatedCoverBlob;
     
     if (cover) {
+      console.log('🖼️ Using custom cover image');
       await ffmpeg.writeFile('cover.jpg', await fetchFileRef.current(cover));
       cmd.push('-i', 'cover.jpg');
     } else if (generatedCoverBlob) {
+      console.log('🎨 Using auto-generated cover');
       await ffmpeg.writeFile('cover.jpg', await fetchFileRef.current(generatedCoverBlob));
       cmd.push('-i', 'cover.jpg');
     }
@@ -441,12 +456,23 @@ export default function App() {
     
     cmd.push('-map_metadata', hasCover ? '2' : '1', '-c:a', 'aac', '-b:a', quality, 'output.m4b');
 
-    setEta('Merging files... (This may take a while)');
+    // If total duration is zero, fall back to indeterminate progress
+    if (totalDurationSec === 0) {
+      setIndeterminate(true);
+      console.warn('⚠️ Could not determine total duration – progress will be indeterminate');
+    }
+    totalAudioDurationRef.current = totalDurationSec;
+
+    // Record start time for speed calculation
+    encodeStartTimeRef.current = Date.now();
+    setEta('Encoding audiobook...');
+    console.log('⏳ Starting encode: ffmpeg ' + cmd.join(' '));
     
     try {
       await ffmpeg.exec(cmd);
       setProgress(100);
-      setEta('Complete!');
+      setEta('Finalizing output file...');
+      console.log('📦 Encode complete, reading output...');
 
       const data = await ffmpeg.readFile('output.m4b');
       const blob = new Blob([data.buffer], { type: 'audio/mp4' });
@@ -458,9 +484,11 @@ export default function App() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      setEta('Download ready!');
+      console.log('✅ Download triggered successfully');
       
     } catch (e) {
-      console.error(e);
+      console.error('💥 Encode error:', e);
       setEta('Error occurred during encoding.');
     } finally {
       setStatus('idle');
@@ -500,6 +528,7 @@ export default function App() {
     setStatus('previewing');
     const ffmpeg = ffmpegRef.current;
 
+    console.log(`🔊 Rendering preview for: ${fileToPreview.name}`);
     try {
       await ffmpeg.writeFile('preview_in.audio', await fetchFileRef.current(fileToPreview.file));
       await ffmpeg.exec(['-y', '-i', 'preview_in.audio', '-t', '15', '-vn', '-c:a', 'aac', '-b:a', quality, 'preview_out.m4a']);
@@ -512,9 +541,10 @@ export default function App() {
         audioRef.current.src = url;
         audioRef.current.play();
         setPreviewPlaying(true);
+        console.log('▶️ Preview playing');
       }
     } catch (e) {
-      console.error(e);
+      console.error('Preview error:', e);
       alert("Failed to render preview.");
     } finally {
       setStatus('idle');
