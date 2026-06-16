@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { Download, AlertTriangle, Play, Square, Settings, Image as ImageIcon, GripVertical, Info, UploadCloud, X } from 'lucide-react';
 
@@ -19,6 +20,8 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [eta, setEta] = useState('');
   const [previewPlaying, setPreviewPlaying] = useState(false);
+  const [previewFile, setPreviewFile] = useState(null);   // track currently being previewed
+  const [indeterminate, setIndeterminate] = useState(false); // true if progress percentage can't be shown
   
   const [isCoiIsolated, setIsCoiIsolated] = useState(true);
   const [totalDuration, setTotalDuration] = useState(0);
@@ -102,11 +105,11 @@ export default function App() {
           }
         });
 
-        // 2. Base URL for CORE (Upgraded successfully to 0.12.10)
+        // 2. Base URL for CORE – using the ESM build (required for FFmpeg.wasm 0.12.x)
         const coreVersion = '0.12.10';
         const baseURL = isMT
-        ? `https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@${coreVersion}/dist/esm`
-        : `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
+          ? `https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@${coreVersion}/dist/esm`
+          : `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
         console.log(`⚙️ Core base URL: ${baseURL}`);
 
         // 3. Fetch blobs individually to pinpoint failures
@@ -372,13 +375,13 @@ export default function App() {
   const executeMerge = async () => {
     if (!ffmpegLoaded || !ffmpegRef.current) return alert("FFmpeg loading...");
     
-    // Only process checked files
     const selectedFiles = files.filter(f => f.checked);
     if (selectedFiles.length === 0) return alert("Please check at least one track to encode.");
 
     setStatus('encoding');
     setProgress(0);
-    setEta('Scanning durations...');
+    setEta('Merging files... (This may take a while)');
+    setIndeterminate(false);  // will be set to true if totalDuration == 0
 
     const ffmpeg = ffmpegRef.current;
     let totalDurationSec = 0;
@@ -410,6 +413,10 @@ export default function App() {
       current_time_ms += durationMs;
     }
 
+    // If total duration is zero (e.g., all duration detections failed), switch to indeterminate progress
+    if (totalDurationSec === 0) {
+      setIndeterminate(true);
+    }
     totalAudioDurationRef.current = totalDurationSec;
 
     await ffmpeg.writeFile('inputs.txt', inputsList);
@@ -457,26 +464,44 @@ export default function App() {
       setEta('Error occurred during encoding.');
     } finally {
       setStatus('idle');
+      setIndeterminate(false);
     }
   };
 
-  const togglePreview = async () => {
+  // Preview logic – can be called with a specific file or without argument
+  const togglePreview = async (file = null) => {
     if (previewPlaying && audioRef.current) {
       audioRef.current.pause();
       setPreviewPlaying(false);
+      setPreviewFile(null);
       return;
     }
 
-    const selectedFiles = files.filter(f => f.checked);
-    if (selectedFiles.length === 0) return alert("Select at least one track to preview.");
-    if (!ffmpegLoaded || !ffmpegRef.current) return alert("FFmpeg not loaded.");
+    const targetFile = file || previewFile;
+    if (!targetFile) {
+      const firstChecked = files.find(f => f.checked);
+      if (!firstChecked) return alert("Select at least one track to preview.");
+      setPreviewFile(firstChecked);
+      await startPreview(firstChecked);
+      return;
+    }
 
+    if (previewPlaying && audioRef.current) {
+      audioRef.current.pause();
+      setPreviewPlaying(false);
+    }
+
+    setPreviewFile(targetFile);
+    await startPreview(targetFile);
+  };
+
+  const startPreview = async (fileToPreview) => {
+    if (!ffmpegLoaded || !ffmpegRef.current) return alert("FFmpeg not loaded.");
     setStatus('previewing');
     const ffmpeg = ffmpegRef.current;
-    const testFile = selectedFiles[0];
 
     try {
-      await ffmpeg.writeFile('preview_in.audio', await fetchFileRef.current(testFile.file));
+      await ffmpeg.writeFile('preview_in.audio', await fetchFileRef.current(fileToPreview.file));
       await ffmpeg.exec(['-y', '-i', 'preview_in.audio', '-t', '15', '-vn', '-c:a', 'aac', '-b:a', quality, 'preview_out.m4a']);
       
       const data = await ffmpeg.readFile('preview_out.m4a');
@@ -604,9 +629,23 @@ export default function App() {
                         {file.name}
                       </span>
 
+                      {/* Per‑track preview button */}
+                      <button
+                        onClick={() => togglePreview(file)}
+                        disabled={status === 'encoding'}
+                        className="p-2 ml-1 text-[#555] hover:text-[#F97300] hover:bg-[#282828] rounded transition disabled:opacity-50"
+                        title="Preview this track"
+                      >
+                        {previewPlaying && previewFile?.id === file.id ? (
+                          <Square className="w-4 h-4 text-[#F97300]" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
+                      </button>
+
                       <button 
                         onClick={() => removeFile(file.id)}
-                        className="p-2 ml-2 text-[#555] hover:text-red-400 hover:bg-[#282828] rounded transition"
+                        className="p-2 ml-1 text-[#555] hover:text-red-400 hover:bg-[#282828] rounded transition"
                         title="Remove Track"
                       >
                         <X className="w-4 h-4" />
@@ -619,12 +658,12 @@ export default function App() {
 
             <div className="flex justify-between items-center mt-3">
               <button 
-                onClick={togglePreview}
+                onClick={() => togglePreview()}  // no argument → previews first checked file if none selected
                 disabled={files.filter(f => f.checked).length === 0 || status === 'encoding' || !ffmpegLoaded}
                 className="text-sm bg-transparent border border-[#B3B3B3] text-white px-3 py-1.5 rounded hover:border-white transition flex items-center gap-2 disabled:opacity-50"
               >
                 {previewPlaying ? <Square className="w-4 h-4 text-[#F97300]" /> : <Play className="w-4 h-4" />}
-                {previewPlaying ? 'Stop Preview' : status === 'previewing' ? 'Rendering...' : 'Preview Track'}
+                {previewPlaying ? 'Stop Preview' : status === 'previewing' ? 'Rendering...' : 'Preview First Track'}
               </button>
               
               <div className="flex items-center gap-4">
@@ -649,7 +688,11 @@ export default function App() {
             {status === 'encoding' && (
               <div className="mt-3 space-y-1">
                 <div className="h-3 w-full bg-[#282828] border border-[#3E3E3E] rounded-full overflow-hidden">
-                  <div className="h-full bg-[#F97300] transition-all duration-300" style={{ width: `${progress}%` }}></div>
+                  {indeterminate ? (
+                    <div className="h-full bg-[#F97300] animate-pulse" style={{ width: '100%' }}></div>
+                  ) : (
+                    <div className="h-full bg-[#F97300] transition-all duration-300" style={{ width: `${progress}%` }}></div>
+                  )}
                 </div>
                 <div className="text-center text-xs font-bold text-[#F97300]">{eta}</div>
               </div>
