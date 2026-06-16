@@ -596,6 +596,9 @@ export default function App() {
     }
   };
 
+  // Determine if file list should have fixed max‑height (after 10 items)
+  const fileListMaxHeight = files.length > 10 ? 'max-h-[320px]' : 'max-h-full';
+
   return (
     <>
       {/* Hide scrollbar for file list (WebKit & Firefox) */}
@@ -680,7 +683,8 @@ export default function App() {
                 <label className="text-xs font-bold tracking-widest text-[#B3B3B3]">SUPPORTED AUDIO FILES</label>
               </div>
               
-              <div className="bg-[#282828] border border-[#3E3E3E] rounded p-2 flex-1 overflow-y-auto hide-scrollbar relative">
+              {/* File list – locks to max‑h after 10 items */}
+              <div className={`bg-[#282828] border border-[#3E3E3E] rounded p-2 overflow-y-auto hide-scrollbar relative transition-all duration-300 ${fileListMaxHeight}`}>
                 {files.length === 0 ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-[#888888] pointer-events-none">
                     <p>Drop folders or files here to begin.</p>
