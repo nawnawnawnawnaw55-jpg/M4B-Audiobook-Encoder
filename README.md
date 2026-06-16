@@ -1,8 +1,9 @@
-# M4B Audiobook Encoder
-
 A desktop application built with Python and PyQt6 that merges multiple audio files into a single .m4b audiobook. 
 
 Instead of processing files one by one, this tool acts as a multithreaded frontend for FFmpeg. It encodes your files into AAC format in parallel across all available CPU cores, then merges them together along with your cover art and metadata.
+
+<img width="1180" height="903" alt="Screenshot 2026-06-15 225729" src="https://github.com/user-attachments/assets/3a317442-5576-4e8c-b0af-6f33ffe7fc05" />
+# M4B Audiobook Encoder
 
 ### Features
 
