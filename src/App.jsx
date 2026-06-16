@@ -18,8 +18,8 @@ export default function App() {
   
   const [status, setStatus] = useState('idle'); // idle, encoding, previewing
   const [progress, setProgress] = useState(0);
-  const [encodeStatusText, setEncodeStatusText] = useState('');   // "Encoding file 2/5"
-  const [speedEtaText, setSpeedEtaText] = useState('');          // "Speed: 3.2x | ETA: 00:05:00"
+  const [encodeStatusText, setEncodeStatusText] = useState('');
+  const [speedEtaText, setSpeedEtaText] = useState('');
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
   const [indeterminate, setIndeterminate] = useState(false);
@@ -42,8 +42,8 @@ export default function App() {
   const fetchFileRef = useRef(null);
   const encodeStartTimeRef = useRef(0);
   const lastEtaUpdateRef = useRef(0);
-  const completedFilesDurationRef = useRef(0);  // sum of durations of already-encoded files
-  const encodingPhaseRef = useRef(false);       // true while encoding individual files
+  const completedFilesDurationRef = useRef(0);
+  const encodingPhaseRef = useRef(false);
 
   // Dynamic Favicon Setup
   useEffect(() => {
@@ -97,11 +97,9 @@ export default function App() {
 
         const ffmpeg = new FFmpeg();
         
-        // Log every message to console and update progress
         ffmpeg.on('log', ({ message }) => {
           console.log(`[FFmpeg] ${message}`);
 
-          // Only process during the actual encoding phase
           if (!encodingPhaseRef.current) return;
 
           const timeMatch = message.match(/time=(-?\d+):(\d{2}):(\d{2}\.\d+)/);
@@ -112,12 +110,10 @@ export default function App() {
             const currentSec = rawH >= 0 ? (rawH * 3600 + m * 60 + s) : -1;
 
             if (currentSec >= 0) {
-              // Live total encoded seconds = already completed files + current file progress
               const totalEncodedSec = completedFilesDurationRef.current + currentSec;
               const pct = Math.min((totalEncodedSec / totalAudioDurationRef.current) * 100, 99);
               setProgress(pct);
 
-              // Update speed/ETA only every 10 real seconds
               const now = Date.now();
               if (now - lastEtaUpdateRef.current > 10000) {
                 lastEtaUpdateRef.current = now;
@@ -309,26 +305,33 @@ export default function App() {
     let folderName = null;
 
     const traverseFileTree = async (item, path = '') => {
-      if (item.isFile) {
-        const file = await new Promise((resolve) => item.file(resolve));
-        if (file.name.match(/\.(mp3|m4a|aac|flac|wav|wma|ogg)$/i)) {
-          audioQueue.push(file);
-        } else if (!foundCover && file.name.match(/\.(jpg|jpeg|png)$/i)) {
-          foundCover = file;
+      try {
+        if (item.isFile) {
+          const file = await new Promise((resolve) => item.file(resolve));
+          if (file.name.match(/\.(mp3|m4a|aac|flac|wav|wma|ogg)$/i)) {
+            audioQueue.push(file);
+          } else if (!foundCover && file.name.match(/\.(jpg|jpeg|png)$/i)) {
+            foundCover = file;
+          }
+        } else if (item.isDirectory) {
+          if (!folderName) folderName = item.name;
+          const dirReader = item.createReader();
+          const entries = await new Promise((resolve) => dirReader.readEntries(resolve));
+          for (let entry of entries) {
+            await traverseFileTree(entry, path + item.name + "/");
+          }
         }
-      } else if (item.isDirectory) {
-        if (!folderName) folderName = item.name;
-        const dirReader = item.createReader();
-        const entries = await new Promise((resolve) => dirReader.readEntries(resolve));
-        for (let entry of entries) {
-          await traverseFileTree(entry, path + item.name + "/");
-        }
+      } catch (err) {
+        console.warn('Skipping item due to error:', err);
       }
     };
 
+    // Process each dropped item independently – a single failure won't stop the rest
     for (let i = 0; i < items.length; i++) {
       const item = items[i].webkitGetAsEntry();
-      if (item) await traverseFileTree(item);
+      if (item) {
+        await traverseFileTree(item);
+      }
     }
 
     if (audioQueue.length > 0) {
@@ -427,8 +430,7 @@ export default function App() {
 
     console.log(`🔍 Scanning durations for ${selectedFiles.length} files...`);
 
-    // First pass: get durations and build metadata
-    const fileDurations = []; // store per-file durations
+    const fileDurations = [];
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
       setEncodeStatusText(`Scanning file ${i+1}/${selectedFiles.length}...`);
@@ -449,7 +451,7 @@ export default function App() {
     // Phase 1: encode each file individually to AAC
     const tempParts = [];
     encodeStartTimeRef.current = Date.now();
-    encodingPhaseRef.current = true;   // enable progress monitoring
+    encodingPhaseRef.current = true;
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
       setEncodeStatusText(`Encoding file ${i+1}/${selectedFiles.length}`);
@@ -477,16 +479,14 @@ export default function App() {
         return;
       }
 
-      // Delete source to free memory
       await ffmpeg.deleteFile(srcName);
       tempParts.push(outName);
       console.log(`✅ Encoded ${f.name} -> ${outName}`);
 
-      // Add this file's actual duration to the completed sum
       completedFilesDurationRef.current += fileDurations[i];
     }
     encodingPhaseRef.current = false;
-    setSpeedEtaText(''); // clear speed/ETA during merge
+    setSpeedEtaText('');
 
     // Phase 2: merge encoded parts with concat + copy
     setEncodeStatusText('Merging encoded files...');
@@ -604,12 +604,10 @@ export default function App() {
     }
   };
 
-  // File list height: empty state gets a fixed taller box (~4 rows), otherwise grows freely until 10 items then locks
   const fileListMaxHeight = files.length === 0 ? 'min-h-[180px]' : (files.length > 10 ? 'max-h-[440px]' : 'max-h-full');
 
   return (
     <>
-      {/* Hide scrollbar for file list (WebKit & Firefox) */}
       <style>{`
         .hide-scrollbar::-webkit-scrollbar {
           display: none;
@@ -875,7 +873,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Focus warning – shown during encoding */}
         {status === 'encoding' && (
           <div className="max-w-6xl mx-auto mt-4 bg-[#282828] border border-[#F97300] p-3 rounded flex items-center gap-2 text-sm text-[#F97300]">
             <AlertTriangle className="w-4 h-4 flex-shrink-0" />
