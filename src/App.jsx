@@ -54,27 +54,39 @@ export default function App() {
     let isMounted = true;
     
     const loadFFmpeg = async () => {
+      console.log('🔄 Starting FFmpeg loader...');
       const isMT = typeof window !== 'undefined' && window.crossOriginIsolated;
       if (!isMT) setIsCoiIsolated(false);
+      console.log(`🧵 Multi-threaded allowed: ${isMT}`);
 
       const loadScript = (src) => new Promise((resolve, reject) => {
-        if (document.querySelector(`script[src="${src}"]`)) return resolve();
+        if (document.querySelector(`script[src="${src}"]`)) {
+          console.log(`✅ Script already loaded: ${src}`);
+          return resolve();
+        }
         const script = document.createElement('script');
         script.src = src;
-        script.onload = resolve;
-        // Updated error handling so we know exactly which URL fails if it 404s
-        script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+        script.onload = () => {
+          console.log(`✅ Script loaded: ${src}`);
+          resolve();
+        };
+        script.onerror = (err) => {
+          console.error(`❌ Script failed: ${src}`, err);
+          reject(new Error(`Failed to load script: ${src}`));
+        };
         document.body.appendChild(script);
       });
 
       try {
-        // Wrapper upgraded to 0.12.10 where classWorkerURL is fully supported
-        await loadScript('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
-        await loadScript('https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js');
+        // 1. Load wrapper and util from jsdelivr
+        await loadScript('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
+        await loadScript('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js');
         
         const { FFmpeg } = window.FFmpegWASM;
         const { fetchFile, toBlobURL } = window.FFmpegUtil;
         fetchFileRef.current = fetchFile;
+
+        console.log('📦 FFmpegWASM and Util loaded.');
 
         const ffmpeg = new FFmpeg();
         
@@ -90,29 +102,55 @@ export default function App() {
           }
         });
 
-        // Core URLs reverted to 0.12.6 because they are on a different track than the wrapper!
-        const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-        
-        // --- BULLETPROOF WORKER CORS BYPASS ---
-        // Internal worker URL matching the 0.12.10 wrapper
-        const classWorkerBlobUrl = await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript');
+        // 2. Base URL for CORE (MUST BE 0.12.6, there is no 0.12.10 for the core!)
+        const coreVersion = '0.12.6';
+        const baseURL = isMT ? `https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@${coreVersion}/dist/umd` : `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/umd`;
+        console.log(`⚙️ Core base URL: ${baseURL}`);
 
+        // 3. Fetch blobs individually to pinpoint failures
+        let coreURL, wasmURL, workerURL, classWorkerURL;
+        
+        try {
+            coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+            console.log('✅ coreURL blob created');
+        } catch (e) { throw new Error(`coreURL failed: ${e.message}`); }
+        
+        try {
+            wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+            console.log('✅ wasmURL blob created');
+        } catch (e) { throw new Error(`wasmURL failed: ${e.message}`); }
+        
+        if (isMT) {
+            try {
+                workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+                console.log('✅ workerURL blob created');
+            } catch (e) { throw new Error(`workerURL failed: ${e.message}`); }
+        }
+        
+        try {
+            classWorkerURL = await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript');
+            console.log('✅ classWorkerURL blob created');
+        } catch (e) { throw new Error(`classWorkerURL failed: ${e.message}`); }
+
+        // 4. Load the engine
+        console.log('⏳ Calling ffmpeg.load()...');
         await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-          workerURL: isMT ? await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript') : undefined,
-          classWorkerURL: classWorkerBlobUrl,
+          coreURL,
+          wasmURL,
+          workerURL,
+          classWorkerURL,
         });
         
         if (isMounted) {
           ffmpegRef.current = ffmpeg;
           setFfmpegLoaded(true);
           setEngineError('');
+          console.log('🎉 FFmpeg loaded successfully!');
         }
       } catch (err) {
-        console.error("FFmpeg failed to load.", err);
+        console.error("💥 FFmpeg failed to load:", err);
         if (isMounted) {
-          setEngineError(err.message || "Failed to load processing engine.");
+          setEngineError(err.message || "Unknown error - see console (F12) for details.");
         }
       }
     };
@@ -704,7 +742,10 @@ export default function App() {
             <div>
               <h3 className="text-red-100 font-bold mb-1">Failed to Load Audio Engine</h3>
               <p className="text-sm text-red-200">
-                {engineError} Please check your internet connection or browser ad-blockers, as they might be preventing the WebAssembly engine from downloading.
+                {engineError}
+              </p>
+              <p className="text-xs text-red-300 mt-2">
+                Press F12 to open the developer console for more detailed network errors.
               </p>
             </div>
           </div>
