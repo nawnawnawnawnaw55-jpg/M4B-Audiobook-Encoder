@@ -18,7 +18,8 @@ export default function App() {
   
   const [status, setStatus] = useState('idle'); // idle, encoding, previewing
   const [progress, setProgress] = useState(0);
-  const [eta, setEta] = useState('');
+  const [encodeStatusText, setEncodeStatusText] = useState('');   // "Encoding file 2/5"
+  const [speedEtaText, setSpeedEtaText] = useState('');          // "Speed: 3.2x | ETA: 00:05:00"
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
   const [indeterminate, setIndeterminate] = useState(false);
@@ -40,9 +41,9 @@ export default function App() {
   const totalAudioDurationRef = useRef(0);
   const fetchFileRef = useRef(null);
   const encodeStartTimeRef = useRef(0);
-  const progressIntervalRef = useRef(null);
-  const lastEtaUpdateRef = useRef(0);   // throttle ETA updates to every 10s
-  const cumulativeEncodedSecRef = useRef(0); // global progress in seconds
+  const lastEtaUpdateRef = useRef(0);
+  const completedFilesDurationRef = useRef(0);  // sum of durations of already-encoded files
+  const encodingPhaseRef = useRef(false);       // true while encoding individual files
 
   // Dynamic Favicon Setup
   useEffect(() => {
@@ -85,7 +86,6 @@ export default function App() {
       });
 
       try {
-        // 1. Load wrapper and util from jsdelivr
         await loadScript('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
         await loadScript('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js');
         
@@ -97,11 +97,13 @@ export default function App() {
 
         const ffmpeg = new FFmpeg();
         
-        // Log every message to console for full transparency
+        // Log every message to console and update progress
         ffmpeg.on('log', ({ message }) => {
           console.log(`[FFmpeg] ${message}`);
 
-          // Flexible regex for time, handles negative hours
+          // Only process during the actual encoding phase
+          if (!encodingPhaseRef.current) return;
+
           const timeMatch = message.match(/time=(-?\d+):(\d{2}):(\d{2}\.\d+)/);
           if (timeMatch && totalAudioDurationRef.current > 0) {
             const rawH = parseInt(timeMatch[1], 10);
@@ -110,37 +112,35 @@ export default function App() {
             const currentSec = rawH >= 0 ? (rawH * 3600 + m * 60 + s) : -1;
 
             if (currentSec >= 0) {
-              // Update global progress (cumulative across files)
-              const newCumulative = cumulativeEncodedSecRef.current + currentSec;
-              const pct = Math.min((newCumulative / totalAudioDurationRef.current) * 100, 99);
+              // Live total encoded seconds = already completed files + current file progress
+              const totalEncodedSec = completedFilesDurationRef.current + currentSec;
+              const pct = Math.min((totalEncodedSec / totalAudioDurationRef.current) * 100, 99);
               setProgress(pct);
 
-              // Only update ETA text every 10 seconds to avoid jank
+              // Update speed/ETA only every 10 real seconds
               const now = Date.now();
               if (now - lastEtaUpdateRef.current > 10000) {
                 lastEtaUpdateRef.current = now;
                 const elapsed = (now - encodeStartTimeRef.current) / 1000;
-                if (elapsed > 1 && newCumulative > 0) {
-                  const speed = newCumulative / elapsed;
-                  const remainingSec = (totalAudioDurationRef.current - newCumulative) / speed;
+                if (elapsed > 1 && totalEncodedSec > 0) {
+                  const speed = totalEncodedSec / elapsed;
+                  const remainingSec = (totalAudioDurationRef.current - totalEncodedSec) / speed;
                   const rh = Math.floor(remainingSec / 3600);
                   const rm = Math.floor((remainingSec % 3600) / 60);
                   const rs = Math.floor(remainingSec % 60);
-                  setEta(`Speed: ${speed.toFixed(1)}x | ETA: ${rh.toString().padStart(2,'0')}:${rm.toString().padStart(2,'0')}:${rs.toString().padStart(2,'0')}`);
+                  setSpeedEtaText(`Speed: ${speed.toFixed(1)}x | ETA: ${rh.toString().padStart(2,'0')}:${rm.toString().padStart(2,'0')}:${rs.toString().padStart(2,'0')}`);
                 }
               }
             }
           }
         });
 
-        // 2. Base URL for CORE – using the ESM build (required for FFmpeg.wasm 0.12.x)
         const coreVersion = '0.12.10';
         const baseURL = isMT
           ? `https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@${coreVersion}/dist/esm`
           : `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
         console.log(`⚙️ Core base URL: ${baseURL}`);
 
-        // 3. Fetch blobs individually to pinpoint failures
         let coreURL, wasmURL, workerURL, classWorkerURL;
         
         try {
@@ -165,7 +165,6 @@ export default function App() {
             console.log('✅ classWorkerURL blob created');
         } catch (e) { throw new Error(`classWorkerURL failed: ${e.message}`); }
 
-        // 4. Load the engine
         console.log('⏳ Calling ffmpeg.load()...');
         await ffmpeg.load({
           coreURL,
@@ -406,10 +405,13 @@ export default function App() {
 
     setStatus('encoding');
     setProgress(0);
-    setEta('Preparing...');
+    setEncodeStatusText('Preparing...');
+    setSpeedEtaText('');
     setIndeterminate(false);
-    cumulativeEncodedSecRef.current = 0;
-    lastEtaUpdateRef.current = 0;   // reset throttle
+    
+    encodingPhaseRef.current = false;
+    completedFilesDurationRef.current = 0;
+    lastEtaUpdateRef.current = 0;
 
     const ffmpeg = ffmpegRef.current;
     let totalDurationSec = 0;
@@ -426,11 +428,13 @@ export default function App() {
     console.log(`🔍 Scanning durations for ${selectedFiles.length} files...`);
 
     // First pass: get durations and build metadata
+    const fileDurations = []; // store per-file durations
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
-      setEta(`Scanning file ${i+1}/${selectedFiles.length}...`);
+      setEncodeStatusText(`Scanning file ${i+1}/${selectedFiles.length}...`);
       console.log(`  Scanning: ${f.name}`);
       const durationSec = await getAudioDuration(f.file);
+      fileDurations.push(durationSec);
       totalDurationSec += durationSec;
       const durationMs = Math.floor(durationSec * 1000);
 
@@ -444,20 +448,20 @@ export default function App() {
 
     // Phase 1: encode each file individually to AAC
     const tempParts = [];
-    encodeStartTimeRef.current = Date.now();   // start global timer
+    encodeStartTimeRef.current = Date.now();
+    encodingPhaseRef.current = true;   // enable progress monitoring
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
-      setEta(`Encoding file ${i+1}/${selectedFiles.length}...`);
+      setEncodeStatusText(`Encoding file ${i+1}/${selectedFiles.length}`);
       console.log(`🎵 Encoding: ${f.name}`);
 
-      // Write source file
       const srcName = `src_${i}.audio`;
       await ffmpeg.writeFile(srcName, await fetchFileRef.current(f.file));
 
       const outName = `part_${i}.m4a`;
       const encodeCmd = [
         '-y', '-i', srcName,
-        '-vn',                   // ignore embedded video/cover
+        '-vn',
         '-c:a', 'aac',
         '-b:a', quality,
         outName
@@ -467,7 +471,8 @@ export default function App() {
         await ffmpeg.exec(encodeCmd);
       } catch (e) {
         console.error(`❌ Failed to encode ${f.name}`, e);
-        setEta(`Error encoding ${f.name}`);
+        setEncodeStatusText(`Error encoding ${f.name}`);
+        encodingPhaseRef.current = false;
         setStatus('idle');
         return;
       }
@@ -477,12 +482,14 @@ export default function App() {
       tempParts.push(outName);
       console.log(`✅ Encoded ${f.name} -> ${outName}`);
 
-      // Update cumulative progress with this file's full pre‑computed duration
-      cumulativeEncodedSecRef.current += await getAudioDuration(f.file);
+      // Add this file's actual duration to the completed sum
+      completedFilesDurationRef.current += fileDurations[i];
     }
+    encodingPhaseRef.current = false;
+    setSpeedEtaText(''); // clear speed/ETA during merge
 
-    // Phase 2: merge encoded parts with concat + copy (almost instant)
-    setEta('Merging encoded files...');
+    // Phase 2: merge encoded parts with concat + copy
+    setEncodeStatusText('Merging encoded files...');
     console.log('🔀 Merging all parts...');
 
     let concatList = '';
@@ -511,7 +518,7 @@ export default function App() {
       cmd.push('-map', '1:v', '-c:v', 'copy', '-disposition:v', 'attached_pic');
     }
     cmd.push('-map_metadata', hasCover ? '2' : '1');
-    cmd.push('-c:a', 'copy');   // stream copy – instant!
+    cmd.push('-c:a', 'copy');
     cmd.push('output.m4b');
 
     console.log('⏳ Running final merge: ffmpeg ' + cmd.join(' '));
@@ -519,7 +526,7 @@ export default function App() {
     try {
       await ffmpeg.exec(cmd);
       setProgress(100);
-      setEta('Finalizing output file...');
+      setEncodeStatusText('Finalizing output file...');
       console.log('📦 Merge complete, reading output...');
 
       const data = await ffmpeg.readFile('output.m4b');
@@ -532,13 +539,14 @@ export default function App() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setEta('Download ready!');
+      setEncodeStatusText('Download ready!');
       console.log('✅ Download triggered successfully');
     } catch (e) {
       console.error('💥 Merge error:', e);
-      setEta('Error during final merge.');
+      setEncodeStatusText('Error during final merge.');
     } finally {
       setStatus('idle');
+      encodingPhaseRef.current = false;
     }
   };
 
@@ -683,7 +691,6 @@ export default function App() {
                 <label className="text-xs font-bold tracking-widest text-[#B3B3B3]">SUPPORTED AUDIO FILES</label>
               </div>
               
-              {/* File list – locks to max‑h after 10 items */}
               <div className={`bg-[#282828] border border-[#3E3E3E] rounded p-2 overflow-y-auto hide-scrollbar relative transition-all duration-300 ${fileListMaxHeight}`}>
                 {files.length === 0 ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-[#888888] pointer-events-none">
@@ -780,7 +787,10 @@ export default function App() {
                   <div className="h-3 w-full bg-[#282828] border border-[#3E3E3E] rounded-full overflow-hidden">
                     <div className="h-full bg-[#F97300] transition-all duration-300" style={{ width: `${progress}%` }}></div>
                   </div>
-                  <div className="text-center text-xs font-bold text-[#F97300]">{eta}</div>
+                  <div className="text-center text-xs font-bold text-[#F97300]">
+                    {encodeStatusText}
+                    {speedEtaText && ` | ${speedEtaText}`}
+                  </div>
                 </div>
               )}
             </div>
