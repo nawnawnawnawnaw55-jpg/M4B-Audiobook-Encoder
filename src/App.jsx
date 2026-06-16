@@ -49,7 +49,7 @@ export default function App() {
     link.href = `data:image/svg+xml,${svgIcon}`;
   }, []);
 
-  // Initialize FFmpeg with Smart Fallback & Worker Bypass
+  // Initialize FFmpeg with Smart Fallback & Direct Memory Blob Bypass
   useEffect(() => {
     let isMounted = true;
     
@@ -91,16 +91,13 @@ export default function App() {
         const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
         
         // --- BULLETPROOF WORKER CORS BYPASS ---
-        // Instead of trying to download the worker directly, we create a proxy Blob worker
-        // that uses importScripts() to legally fetch cross-origin code from unpkg.
-        const workerCode = `importScripts("https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/814.ffmpeg.js");`;
-        const proxyWorkerUrl = URL.createObjectURL(new Blob([workerCode], { type: 'text/javascript' }));
+        const classWorkerBlobUrl = await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/814.ffmpeg.js', 'text/javascript');
 
         await ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
           workerURL: isMT ? await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript') : undefined,
-          classWorkerURL: proxyWorkerUrl,
+          classWorkerURL: classWorkerBlobUrl,
         });
         
         if (isMounted) {
@@ -139,7 +136,6 @@ export default function App() {
   useEffect(() => {
     const calculateTotalDuration = async () => {
       let duration = 0;
-      // Only calculate duration for checked files
       const checkedFiles = files.filter(f => f.checked);
       for (let i = 0; i < checkedFiles.length; i++) {
         duration += await getAudioDuration(checkedFiles[i].file);
@@ -212,11 +208,28 @@ export default function App() {
     updateCover();
   }, [meta.title, files.length, cover]);
 
+  // Global Drag Events (Fixed to ignore internal reordering)
+  const handleGlobalDragOver = (e) => {
+    e.preventDefault();
+    // Only trigger drop overlay if we are NOT internally dragging an item AND it's actually files being dragged
+    const isFileDrag = e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files');
+    if (dragItem.current === null && isFileDrag) {
+      setIsDraggingOverApp(true);
+    }
+  };
+
+  const handleGlobalDragLeave = (e) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      setIsDraggingOverApp(false);
+    }
+  };
+
   const handleGlobalDrop = async (e) => {
     e.preventDefault();
     setIsDraggingOverApp(false);
     
-    if (status !== 'idle') return;
+    // Ignore internal drops
+    if (dragItem.current !== null || status !== 'idle') return;
 
     const items = e.dataTransfer.items;
     let audioQueue = [];
@@ -300,6 +313,7 @@ export default function App() {
     dragItem.current = null;
     dragOverItem.current = null;
     setDragOverIndex(null);
+    setIsDraggingOverApp(false); // Failsafe
   };
 
   // Track Management Functions
@@ -441,8 +455,8 @@ export default function App() {
   return (
     <div 
       className="min-h-screen bg-[#121212] text-[#B3B3B3] p-8 font-sans relative"
-      onDragOver={(e) => { e.preventDefault(); setIsDraggingOverApp(true); }}
-      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDraggingOverApp(false); }}
+      onDragOver={handleGlobalDragOver}
+      onDragLeave={handleGlobalDragLeave}
       onDrop={handleGlobalDrop}
     >
       
@@ -535,7 +549,6 @@ export default function App() {
                         <GripVertical className="w-4 h-4" />
                       </div>
                       
-                      {/* Checkbox for Desktop-style Selection */}
                       <input 
                         type="checkbox" 
                         checked={file.checked} 
@@ -547,7 +560,6 @@ export default function App() {
                         {file.name}
                       </span>
 
-                      {/* X Button for Desktop-style Removal */}
                       <button 
                         onClick={() => removeFile(file.id)}
                         className="p-2 ml-2 text-[#555] hover:text-red-400 hover:bg-[#282828] rounded transition"
