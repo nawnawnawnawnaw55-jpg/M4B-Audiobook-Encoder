@@ -693,8 +693,10 @@ export default function App() {
               
               <div className={`bg-[#282828] border border-[#3E3E3E] rounded p-2 overflow-y-auto hide-scrollbar relative transition-all duration-300 ${fileListMaxHeight}`}>
                 {files.length === 0 ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-[#888888] pointer-events-none">
-                    <p>Drop folders or files here to begin.</p>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-[#888888] pointer-events-none gap-3">
+                    <UploadCloud className="w-12 h-12 text-[#535353]" />
+                    <p className="text-lg font-semibold">Drop folders or files here to begin.</p>
+                    <p className="text-xs text-[#666]">Supported: .mp3, .m4a, .flac, .wav, .jpg covers</p>
                   </div>
                 ) : (
                   <div className="space-y-1">
