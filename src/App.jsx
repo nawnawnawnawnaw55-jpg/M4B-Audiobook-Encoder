@@ -62,12 +62,13 @@ export default function App() {
         const script = document.createElement('script');
         script.src = src;
         script.onload = resolve;
-        script.onerror = reject;
+        // Updated error handling so we know exactly which URL fails if it 404s
+        script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
         document.body.appendChild(script);
       });
 
       try {
-        // Upgraded to 0.12.10 where classWorkerURL is fully supported
+        // Wrapper upgraded to 0.12.10 where classWorkerURL is fully supported
         await loadScript('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
         await loadScript('https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js');
         
@@ -89,11 +90,11 @@ export default function App() {
           }
         });
 
-        // Upgraded core URLs to 0.12.10
-        const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd';
+        // Core URLs reverted to 0.12.6 because they are on a different track than the wrapper!
+        const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
         
         // --- BULLETPROOF WORKER CORS BYPASS ---
-        // Upgraded internal worker URL to 0.12.10
+        // Internal worker URL matching the 0.12.10 wrapper
         const classWorkerBlobUrl = await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript');
 
         await ffmpeg.load({
