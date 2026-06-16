@@ -604,8 +604,8 @@ export default function App() {
     }
   };
 
-  // Determine if file list should have fixed max‑height (after 10 items)
-  const fileListMaxHeight = files.length > 10 ? 'max-h-[320px]' : 'max-h-full';
+  // File list height: grows freely until 10 items, then locks at a comfortable 10‑row height
+  const fileListMaxHeight = files.length > 10 ? 'max-h-[440px]' : 'max-h-full';
 
   return (
     <>
