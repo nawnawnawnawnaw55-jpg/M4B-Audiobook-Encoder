@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Download, AlertTriangle, Play, Square, Settings, Image as ImageIcon, GripVertical, Info, UploadCloud } from 'lucide-react';
+import { Download, AlertTriangle, Play, Square, Settings, Image as ImageIcon, GripVertical, Info, UploadCloud, X } from 'lucide-react';
 
 export default function App() {
   // Application State
@@ -49,7 +49,7 @@ export default function App() {
     link.href = `data:image/svg+xml,${svgIcon}`;
   }, []);
 
-  // Initialize FFmpeg with Smart Fallback
+  // Initialize FFmpeg with Smart Fallback & Worker Bypass
   useEffect(() => {
     let isMounted = true;
     
@@ -70,7 +70,6 @@ export default function App() {
         await loadScript('https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/ffmpeg.js');
         await loadScript('https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js');
         
-        // Extract the toBlobURL utility along with fetchFile
         const { FFmpeg } = window.FFmpegWASM;
         const { fetchFile, toBlobURL } = window.FFmpegUtil;
         fetchFileRef.current = fetchFile;
@@ -91,12 +90,17 @@ export default function App() {
 
         const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
         
-        // --- THIS IS THE CRUCIAL FIX THAT BYPASSES THE ERROR ---
+        // --- BULLETPROOF WORKER CORS BYPASS ---
+        // Instead of trying to download the worker directly, we create a proxy Blob worker
+        // that uses importScripts() to legally fetch cross-origin code from unpkg.
+        const workerCode = `importScripts("https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/814.ffmpeg.js");`;
+        const proxyWorkerUrl = URL.createObjectURL(new Blob([workerCode], { type: 'text/javascript' }));
+
         await ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
           workerURL: isMT ? await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript') : undefined,
-          classWorkerURL: await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/814.ffmpeg.js', 'text/javascript'),
+          classWorkerURL: proxyWorkerUrl,
         });
         
         if (isMounted) {
@@ -135,15 +139,26 @@ export default function App() {
   useEffect(() => {
     const calculateTotalDuration = async () => {
       let duration = 0;
-      for (let i = 0; i < files.length; i++) {
-        duration += await getAudioDuration(files[i].file);
+      // Only calculate duration for checked files
+      const checkedFiles = files.filter(f => f.checked);
+      for (let i = 0; i < checkedFiles.length; i++) {
+        duration += await getAudioDuration(checkedFiles[i].file);
       }
       setTotalDuration(duration);
     };
     calculateTotalDuration();
   }, [files]);
 
+  // Auto-Generate Canvas Cover Art Logic
   useEffect(() => {
+    const shouldGenerateCover = files.length > 0 || meta.title.trim() !== '';
+
+    if (!shouldGenerateCover) {
+      setGeneratedCoverBlob(null);
+      if (!cover) setCoverPreview(null);
+      return;
+    }
+
     const generateCoverBlob = async () => {
       return new Promise((resolve) => {
         const canvas = document.createElement('canvas');
@@ -195,7 +210,7 @@ export default function App() {
       }
     };
     updateCover();
-  }, [meta.title, cover]);
+  }, [meta.title, files.length, cover]);
 
   const handleGlobalDrop = async (e) => {
     e.preventDefault();
@@ -237,7 +252,8 @@ export default function App() {
         id: Math.random().toString(36).substr(2, 9),
         file: f,
         name: f.name,
-        customChapterName: f.name.replace(/\.[^/.]+$/, "")
+        customChapterName: f.name.replace(/\.[^/.]+$/, ""),
+        checked: true // Checkbox state
       }));
       setFiles(prev => [...prev, ...newFiles]);
       
@@ -260,7 +276,8 @@ export default function App() {
       id: Math.random().toString(36).substr(2, 9),
       file: f,
       name: f.name,
-      customChapterName: f.name.replace(/\.[^/.]+$/, "")
+      customChapterName: f.name.replace(/\.[^/.]+$/, ""),
+      checked: true // Checkbox state
     }));
     setFiles(prev => [...prev, ...newFiles]);
   };
@@ -285,9 +302,21 @@ export default function App() {
     setDragOverIndex(null);
   };
 
+  // Track Management Functions
+  const toggleFileCheckbox = (id) => {
+    setFiles(files.map(f => f.id === id ? { ...f, checked: !f.checked } : f));
+  };
+
+  const removeFile = (id) => {
+    setFiles(files.filter(f => f.id !== id));
+  };
+
   const executeMerge = async () => {
     if (!ffmpegLoaded || !ffmpegRef.current) return alert("FFmpeg loading...");
-    if (files.length === 0) return;
+    
+    // Only process checked files
+    const selectedFiles = files.filter(f => f.checked);
+    if (selectedFiles.length === 0) return alert("Please check at least one track to encode.");
 
     setStatus('encoding');
     setProgress(0);
@@ -306,8 +335,8 @@ export default function App() {
     let current_time_ms = 0;
     let inputsList = '';
 
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const f = selectedFiles[i];
       const durationSec = await getAudioDuration(f.file);
       totalDurationSec += durationSec;
       const durationMs = Math.floor(durationSec * 1000);
@@ -380,12 +409,13 @@ export default function App() {
       return;
     }
 
-    if (files.length === 0) return alert("Add an audio file to preview.");
+    const selectedFiles = files.filter(f => f.checked);
+    if (selectedFiles.length === 0) return alert("Select at least one track to preview.");
     if (!ffmpegLoaded || !ffmpegRef.current) return alert("FFmpeg not loaded.");
 
     setStatus('previewing');
     const ffmpeg = ffmpegRef.current;
-    const testFile = files[0];
+    const testFile = selectedFiles[0];
 
     try {
       await ffmpeg.writeFile('preview_in.audio', await fetchFileRef.current(testFile.file));
@@ -498,11 +528,33 @@ export default function App() {
                       }}
                       onDragEnd={handleSort}
                       onDragOver={(e) => e.preventDefault()}
-                      className={`bg-[#181818] border border-[#3E3E3E] p-2 rounded flex items-center cursor-move hover:border-[#888] transition group
+                      className={`bg-[#181818] border border-[#3E3E3E] p-2 rounded flex items-center hover:border-[#888] transition group
                         ${dragOverIndex === index ? 'border-t-2 border-t-[#F97300]' : ''}`}
                     >
-                      <GripVertical className="w-4 h-4 text-[#555] mr-2 group-hover:text-[#F97300]" />
-                      <span className="text-sm text-white truncate flex-1">{file.name}</span>
+                      <div className="cursor-move p-2 text-[#555] group-hover:text-[#F97300]">
+                        <GripVertical className="w-4 h-4" />
+                      </div>
+                      
+                      {/* Checkbox for Desktop-style Selection */}
+                      <input 
+                        type="checkbox" 
+                        checked={file.checked} 
+                        onChange={() => toggleFileCheckbox(file.id)}
+                        className="w-4 h-4 mr-3 accent-[#F97300] cursor-pointer"
+                      />
+                      
+                      <span className={`text-sm flex-1 truncate transition ${file.checked ? 'text-white' : 'text-[#666] line-through'}`}>
+                        {file.name}
+                      </span>
+
+                      {/* X Button for Desktop-style Removal */}
+                      <button 
+                        onClick={() => removeFile(file.id)}
+                        className="p-2 ml-2 text-[#555] hover:text-red-400 hover:bg-[#282828] rounded transition"
+                        title="Remove Track"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -512,7 +564,7 @@ export default function App() {
             <div className="flex justify-between items-center mt-3">
               <button 
                 onClick={togglePreview}
-                disabled={files.length === 0 || status === 'encoding' || !ffmpegLoaded}
+                disabled={files.filter(f => f.checked).length === 0 || status === 'encoding' || !ffmpegLoaded}
                 className="text-sm bg-transparent border border-[#B3B3B3] text-white px-3 py-1.5 rounded hover:border-white transition flex items-center gap-2 disabled:opacity-50"
               >
                 {previewPlaying ? <Square className="w-4 h-4 text-[#F97300]" /> : <Play className="w-4 h-4" />}
@@ -532,7 +584,7 @@ export default function App() {
           <div className="mt-4">
             <button 
               onClick={executeMerge}
-              disabled={files.length === 0 || status !== 'idle' || !ffmpegLoaded}
+              disabled={files.filter(f=>f.checked).length === 0 || status !== 'idle' || !ffmpegLoaded}
               className={`w-full ${engineError ? 'bg-red-900 text-red-200' : 'bg-[#F97300] hover:bg-[#FF8C3A]'} disabled:bg-[#3E3E3E] disabled:text-[#888] text-white font-bold py-3 rounded-full transition text-lg flex justify-center items-center gap-2`}
             >
               {status === 'encoding' ? 'ENCODING...' : engineError ? 'ENGINE ERROR (SEE BOTTOM)' : !ffmpegLoaded ? 'LOADING ENGINE...' : <><Download className="w-5 h-5"/> ENCODE TO M4B</>}
@@ -575,7 +627,7 @@ export default function App() {
 
             {chapterMode === 'custom' && showChapterEditor && files.length > 0 && (
               <div className="mt-2 bg-[#181818] border border-[#3E3E3E] rounded p-2 max-h-48 overflow-y-auto space-y-2">
-                {files.map((file, idx) => (
+                {files.filter(f => f.checked).map((file, idx) => (
                   <div key={file.id} className="flex flex-col gap-1">
                     <span className="text-xs text-[#888] truncate">{file.name}</span>
                     <input 
@@ -583,7 +635,8 @@ export default function App() {
                       value={file.customChapterName}
                       onChange={(e) => {
                         const newFiles = [...files];
-                        newFiles[idx].customChapterName = e.target.value;
+                        const fileIndex = newFiles.findIndex(f => f.id === file.id);
+                        newFiles[fileIndex].customChapterName = e.target.value;
                         setFiles(newFiles);
                       }}
                       className="bg-[#282828] text-white border border-[#3E3E3E] rounded p-1 text-sm focus:border-[#F97300] outline-none"
