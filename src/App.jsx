@@ -79,7 +79,6 @@ export default function App() {
         
         ffmpeg.on('log', ({ message }) => {
           const timeMatch = message.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/);
-          // Only drive progress bar if we are actively encoding
           if (timeMatch && totalAudioDurationRef.current > 0) {
             const h = parseFloat(timeMatch[1]);
             const m = parseFloat(timeMatch[2]);
@@ -90,15 +89,13 @@ export default function App() {
           }
         });
 
-        // Load the multithreaded core if headers are present, otherwise load the standard single-threaded core
         const baseURL = isMT ? 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd' : 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
         
-        // FIX: Wrap the CDN URLs in toBlobURL to bypass the browser's Cross-Origin Worker security blocks
+        // --- THIS IS THE CRUCIAL FIX THAT BYPASSES THE ERROR ---
         await ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
           workerURL: isMT ? await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript') : undefined,
-          // NEW ADDITION: Fetch the internal FFmpeg class worker as a local Blob
           classWorkerURL: await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/umd/814.ffmpeg.js', 'text/javascript'),
         });
         
@@ -120,7 +117,6 @@ export default function App() {
     return () => { isMounted = false; };
   }, []);
 
-  // Utility to get audio duration
   const getAudioDuration = (file) => {
     return new Promise((resolve) => {
       const url = URL.createObjectURL(file);
@@ -136,7 +132,6 @@ export default function App() {
     });
   };
 
-  // Calculate total duration whenever files change
   useEffect(() => {
     const calculateTotalDuration = async () => {
       let duration = 0;
@@ -148,7 +143,6 @@ export default function App() {
     calculateTotalDuration();
   }, [files]);
 
-  // Auto-Generate Canvas Cover Art
   useEffect(() => {
     const generateCoverBlob = async () => {
       return new Promise((resolve) => {
@@ -157,13 +151,11 @@ export default function App() {
         canvas.height = 600;
         const ctx = canvas.getContext('2d');
 
-        // Backgrounds
         ctx.fillStyle = "#282828";
         ctx.fillRect(0, 0, 600, 600);
         ctx.fillStyle = "#F97300";
         ctx.fillRect(0, 0, 600, 15);
 
-        // Text Properties
         ctx.fillStyle = "#FFFFFF";
         ctx.font = "bold 36px sans-serif";
         ctx.textAlign = "center";
@@ -205,7 +197,6 @@ export default function App() {
     updateCover();
   }, [meta.title, cover]);
 
-  // Handlers for Global Drag & Drop (Folders and Files)
   const handleGlobalDrop = async (e) => {
     e.preventDefault();
     setIsDraggingOverApp(false);
@@ -282,7 +273,6 @@ export default function App() {
     }
   };
 
-  // Drag & Drop Reordering Logic
   const handleSort = () => {
     if (dragItem.current !== null && dragOverItem.current !== null && dragItem.current !== dragOverItem.current) {
       let _files = [...files];
@@ -295,12 +285,8 @@ export default function App() {
     setDragOverIndex(null);
   };
 
-  // Encoding Process
   const executeMerge = async () => {
-    if (!ffmpegLoaded || !ffmpegRef.current) {
-      alert("FFmpeg is still loading. Please wait a moment.");
-      return;
-    }
+    if (!ffmpegLoaded || !ffmpegRef.current) return alert("FFmpeg loading...");
     if (files.length === 0) return;
 
     setStatus('encoding');
@@ -361,7 +347,7 @@ export default function App() {
     
     cmd.push('-map_metadata', hasCover ? '2' : '1', '-c:a', 'aac', '-b:a', quality, 'output.m4b');
 
-    setEta('Merging files... (This may take a while depending on RAM)');
+    setEta('Merging files... (This may take a while)');
     
     try {
       await ffmpeg.exec(cmd);
@@ -387,7 +373,6 @@ export default function App() {
     }
   };
 
-  // Preview Process
   const togglePreview = async () => {
     if (previewPlaying && audioRef.current) {
       audioRef.current.pause();
@@ -431,7 +416,6 @@ export default function App() {
       onDrop={handleGlobalDrop}
     >
       
-      {/* Full-screen Drop Zone Overlay */}
       {isDraggingOverApp && status === 'idle' && (
         <div className="absolute inset-0 z-50 bg-[#F97300]/20 border-4 border-dashed border-[#F97300] m-4 rounded-xl flex items-center justify-center pointer-events-none">
           <div className="bg-[#181818] px-8 py-6 rounded-lg flex flex-col items-center shadow-2xl">
@@ -442,16 +426,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Hidden Audio Element for Previews */}
       <audio ref={audioRef} onEnded={() => setPreviewPlaying(false)} className="hidden" />
 
-      {/* Main App Layout */}
       <div className="max-w-6xl mx-auto flex flex-col md:flex-row gap-8">
         
-        {/* Left Panel - Core Settings & Files */}
         <div className="flex-1 flex flex-col gap-6">
           
-          {/* Title */}
           <div>
             <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">AUDIOBOOK TITLE</label>
             <input 
@@ -463,7 +443,6 @@ export default function App() {
             />
           </div>
 
-          {/* Additional Metadata Accordion */}
           <div>
             <button 
               onClick={() => setShowMeta(!showMeta)} 
@@ -482,7 +461,6 @@ export default function App() {
             )}
           </div>
 
-          {/* Quality */}
           <div>
             <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">AAC ENCODING QUALITY</label>
             <select 
@@ -497,7 +475,6 @@ export default function App() {
             </select>
           </div>
 
-          {/* File List */}
           <div className="flex flex-col flex-1 min-h-[300px]">
             <div className="flex justify-between items-end mb-1">
               <label className="text-xs font-bold tracking-widest text-[#B3B3B3]">SUPPORTED AUDIO FILES</label>
@@ -552,7 +529,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Encode Button & Progress */}
           <div className="mt-4">
             <button 
               onClick={executeMerge}
@@ -574,10 +550,8 @@ export default function App() {
 
         </div>
 
-        {/* Right Panel - Chapters & Cover */}
         <div className="w-full md:w-[350px] flex flex-col">
           
-          {/* Chapter Markers */}
           <div className="mb-8">
             <label className="block text-xs font-bold tracking-widest mb-1 text-[#B3B3B3]">CHAPTER MARKERS</label>
             <select 
@@ -599,7 +573,6 @@ export default function App() {
               </button>
             )}
 
-            {/* Inline Custom Chapter Editor */}
             {chapterMode === 'custom' && showChapterEditor && files.length > 0 && (
               <div className="mt-2 bg-[#181818] border border-[#3E3E3E] rounded p-2 max-h-48 overflow-y-auto space-y-2">
                 {files.map((file, idx) => (
@@ -621,9 +594,8 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex-1"></div> {/* Spacer to push cover to bottom */}
+          <div className="flex-1"></div> 
 
-          {/* Cover Art */}
           <div className="flex flex-col items-center">
             <div className="w-[350px] h-[350px] bg-[#181818] rounded-lg overflow-hidden flex items-center justify-center relative border border-[#3E3E3E]">
               {coverPreview ? (
@@ -655,10 +627,8 @@ export default function App() {
         </div>
       </div>
 
-      {/* Warnings & Notices (Moved to Bottom) */}
       <div className="max-w-6xl mx-auto mt-8 space-y-4">
         
-        {/* Engine Error Warning (Visible if FFmpeg fails to load) */}
         {engineError && (
           <div className="bg-red-900/30 border border-red-500/50 p-4 rounded shadow-md flex items-start gap-4">
             <AlertTriangle className="text-red-400 w-6 h-6 flex-shrink-0 mt-1" />
@@ -671,7 +641,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Memory Limit Warning - Only shows if over 3 hours (10800 seconds) */}
         {totalDuration > 10800 && (
           <div className="bg-[#282828] border-l-4 border-[#F97300] p-4 rounded-r shadow-md flex items-start gap-4">
             <AlertTriangle className="text-[#F97300] w-6 h-6 flex-shrink-0 mt-1" />
@@ -689,7 +658,6 @@ export default function App() {
           </div>
         )}
 
-        {/* COOP/COEP Dev Warning */}
         {!isCoiIsolated && (
           <div className="bg-red-900/30 border border-red-500/50 p-4 rounded shadow-md flex items-start gap-4">
             <Info className="text-red-400 w-6 h-6 flex-shrink-0 mt-1" />
